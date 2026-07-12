@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-circularos_dev}
       POSTGRES_DB: ${POSTGRES_DB:-circularos}
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/docker/init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql
@@ -24,7 +24,7 @@ services:
     image: redis:7-alpine
     container_name: circularos-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     healthcheck:

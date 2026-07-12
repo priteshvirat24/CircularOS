@@ -49,13 +49,13 @@ class Settings(BaseSettings):
     app_port: int = 8000
 
     # ── Database ─────────────────────────────────
-    database_url: str = "postgresql+asyncpg://circularos:circularos_dev@localhost:5432/circularos"
-    database_sync_url: str = "postgresql://circularos:circularos_dev@localhost:5432/circularos"
+    database_url: str = "postgresql+asyncpg://circularos:circularos_dev@localhost:5433/circularos"
+    database_sync_url: str = "postgresql://circularos:circularos_dev@localhost:5433/circularos"
 
     # ── Redis ────────────────────────────────────
-    redis_url: str = "redis://localhost:6379/0"
-    celery_broker_url: str = "redis://localhost:6379/1"
-    celery_result_backend: str = "redis://localhost:6379/2"
+    redis_url: str = "redis://localhost:6380/0"
+    celery_broker_url: str = "redis://localhost:6380/1"
+    celery_result_backend: str = "redis://localhost:6380/2"
 
     # ── Authentication ───────────────────────────
     jwt_secret: str = Field(default_factory=lambda: secrets.token_urlsafe(48))
