@@ -1,128 +1,179 @@
-# CircularOS
-**Agentic Regulatory Intelligence, Compliance Operations, and Supervisory Technology Platform**
+<div align="center">
+  <img src="apps/web/public/window.svg" alt="CircularOS Logo" width="120" />
+  <h1>CircularOS</h1>
+  <p><strong>Next-Generation Agentic RegTech & SupTech Platform</strong></p>
+  <p><i>Turning regulatory chaos into structured, actionable intelligence.</i></p>
 
-CircularOS is a production-grade, asynchronous, event-driven RegTech platform designed for the complex regulatory landscape of the Indian Securities Market (SEBI, RBI, NSE, BSE). It converts unstructured regulatory circulars and notifications into structured, machine-actionable obligations with full provenance, maps them to internal controls, and provides an elegant human-in-the-loop (HITL) review interface.
-
----
-
-## 🏛️ System Architecture
-
-The system is built as a highly scalable Python/TypeScript monorepo. It features a microservice-inspired architecture running on a unified codebase, separating the fast synchronous web server from heavy asynchronous AI workloads.
-
-### High-Level Components
-
-1. **FastAPI Backend (`apps/api`)**: The core entry point for the frontend. Handles authentication, RBAC, CRUD operations, and initiates background tasks.
-2. **Celery Task Worker (`apps/worker`)**: Handles long-running, I/O bound tasks including PDF processing, OCR, and AI agent orchestration.
-3. **Next.js Web Application (`apps/web`)**: A premium, glassmorphic UI built with React 18, Tailwind CSS, and Next.js App Router for compliance officers to interface with the data.
-4. **Agentic Engine (`packages/ai`)**: The core intelligence layer powered by LangGraph, abstracting multi-agent orchestration and LLM integrations.
-5. **PostgreSQL + pgvector**: The primary data store, using SQLAlchemy 2.0 with asynchronous drivers (`asyncpg`) and `uuid7` for time-sortable relational data and vector embeddings.
-6. **Redis**: Used as the Celery message broker, application cache, and distributed lock manager for rate-limiting.
+  <p>
+    <a href="#-the-problem">Problem</a> •
+    <a href="#-the-solution">Solution</a> •
+    <a href="#%EF%B8%8F-architecture-design">Architecture</a> •
+    <a href="#-agentic-ai-workflow">Agentic AI</a> •
+    <a href="#-tech-stack">Tech Stack</a>
+  </p>
+</div>
 
 ---
 
-## 🤖 Agentic AI & LangGraph Topologies
+## 🚨 The Problem
+The Indian Securities Market (regulated by SEBI, RBI, NSE, BSE) releases hundreds of complex circulars and master directions annually. Currently, compliance teams manually read PDFs, decipher legal jargon, and manually map obligations to internal controls. This process is:
+- **Slow & Error-Prone**: Leading to multi-million dollar fines for non-compliance.
+- **Unscalable**: As the regulatory velocity increases, human analysts cannot keep up.
+- **Siloed**: Disconnect between the regulators (SupTech) and the regulated entities (RegTech).
 
-CircularOS leverages **LangGraph** to build stateful, multi-actor applications with LLMs. Unlike simple zero-shot prompting, CircularOS uses complex Directed Acyclic Graphs (DAGs) to process regulatory text.
+## 💡 The Solution
+**CircularOS** is an autonomous AI-driven platform that ingests unstructured regulatory PDFs and uses a sophisticated **Multi-Agent LangGraph architecture** to parse, classify, and extract highly structured, machine-actionable compliance obligations.
 
-### The Supervisor Pattern
-A top-level Supervisor Agent routes documents through various subgraphs based on the current context:
-- **Document Intelligence Subgraph**: 
-  - *Document Classifier*: Identifies the issuing authority and document type using a fast model (e.g., `gpt-4o-mini`).
-  - *Clause Classifier*: Evaluates individual paragraphs to determine if they contain actionable compliance obligations.
-  - *Obligation Extractor*: Uses reasoning models (`gpt-4o`) to extract highly structured JSON objects (Actor, Action, Object, Deadline, Risk Level) directly linked to source citations.
-- **Knowledge Extraction Subgraph**: 
-  - Takes the extracted obligations and autonomously maps them to internal control frameworks (e.g., ISO 27001, SOC 2).
-
-### AI Resilience (`packages/ai/resilience.py`)
-All LLM API calls are wrapped in robust Circuit Breakers and exponential backoff retry logic (via `tenacity`) to gracefully handle provider outages and rate-limiting (HTTP 429/500 errors).
+It features a **Human-in-the-loop (HITL)** Review Workbench for compliance officers to verify AI extractions before they are mapped to internal controls via our Knowledge Extraction Graph.
 
 ---
 
-## 🛠️ Technology Stack
+## 🏗️ Architecture Design
 
-### Backend
-- **Python 3.12+**: Utilizing modern typing and async paradigms.
-- **FastAPI**: High-performance asynchronous REST API framework.
-- **SQLAlchemy 2.0**: The premier Python ORM, operating in fully asynchronous mode via `asyncpg`.
-- **Alembic**: Database migration management.
-- **Celery**: Distributed task queue for executing LangGraph workflows.
-- **PyMuPDF & Tesseract**: For advanced, spatial-aware document parsing and OCR.
+CircularOS is built on a highly scalable, event-driven microservice architecture, allowing the heavy AI processing to happen asynchronously without blocking the frontend.
 
-### Frontend
-- **Next.js 14+ (App Router)**: Server-side rendering and robust routing.
-- **React 18**: Component-based UI library.
-- **Tailwind CSS v4**: Utility-first styling.
-- **Lucide React**: Premium iconography.
-- **Axios**: API client integration.
+```mermaid
+graph TD
+    classDef frontend fill:#3b82f6,stroke:#1d4ed8,stroke-width:2px,color:#fff;
+    classDef api fill:#10b981,stroke:#047857,stroke-width:2px,color:#fff;
+    classDef worker fill:#8b5cf6,stroke:#6d28d9,stroke-width:2px,color:#fff;
+    classDef db fill:#f59e0b,stroke:#b45309,stroke-width:2px,color:#fff;
+    classDef ai fill:#ec4899,stroke:#be185d,stroke-width:2px,color:#fff;
 
-### Infrastructure & DevOps
-- **Docker & Docker Compose**: Containerized development and deployment.
-- **PostgreSQL 16**: Relational database.
-- **Redis 7**: In-memory data structure store.
+    User([Compliance Officer]) --> |HTTPS / JWT| WebApp
+    
+    subgraph "Next.js Web Application (React 18)"
+        WebApp[Glassmorphic UI]:::frontend
+    end
+    
+    WebApp <--> |REST API| FastAPI
+    
+    subgraph "Core Backend Services"
+        FastAPI[FastAPI Server]:::api
+        Redis[(Redis Broker)]:::db
+        Worker[Celery Task Worker]:::worker
+        
+        FastAPI --> |Publishes Task| Redis
+        Redis --> |Consumes Task| Worker
+    end
+    
+    subgraph "Persistence Layer"
+        PostgreSQL[(PostgreSQL + pgvector)]:::db
+        FastAPI <--> |asyncpg| PostgreSQL
+        Worker <--> |asyncpg| PostgreSQL
+    end
+    
+    subgraph "Agentic AI Engine"
+        LangGraph[LangGraph Supervisor]:::ai
+        Worker --> |Invokes Graph| LangGraph
+        LangGraph <--> |OpenAI / Gemini| LLM((LLM Providers))
+    end
+```
+
+### Key Architectural Highlights
+- **Monorepo Structure**: Unified Python (Backend) and TypeScript (Frontend) repository.
+- **Asynchronous Data Layer**: `asyncpg` combined with SQLAlchemy 2.0 ensures massive concurrent I/O throughput.
+- **Time-sortable UUIDv7**: Primary keys are optimized for database index clustering while preventing sequence prediction.
+- **Circuit Breakers**: Advanced `tenacity` retry logic ensures the pipeline survives rate limits and LLM provider outages.
 
 ---
 
-## 🔒 Security & Compliance Design
+## 🤖 Agentic AI Workflow
 
-As a RegTech platform, CircularOS enforces strict security measures:
-- **Authentication**: JWT-based access tokens with strict refresh token rotation.
-- **Password Security**: Standard bcrypt hashing.
-- **Role-Based Access Control (RBAC)**: Fine-grained permissions featuring 7 distinct roles (Super Admin, Org Admin, Compliance Officer, Reviewer, Analyst, Auditor, Supervisory Viewer).
-- **Organization Tenancy**: Strict logical separation of data using `organization_id` boundaries on all multi-tenant models.
-- **Audit Trails**: Extensive logging and a dedicated `AuditLog` domain model tracking every mutation.
-- **Soft Deletion**: Records are never hard-deleted; instead, `deleted_at` and `deleted_by` fields maintain historical integrity.
+We moved beyond basic "wrapper" prompting. CircularOS utilizes **LangGraph** to build a stateful, cyclical graph of AI agents that independently verify and cross-reference information.
+
+```mermaid
+stateDiagram-v2
+    direction TB
+    
+    state "Document Processing Pipeline" as DocProc {
+        [*] --> Download
+        Download --> SHA256_Integrity
+        SHA256_Integrity --> PyMuPDF_Parsing
+        PyMuPDF_Parsing --> Spatial_Clause_Detection
+    }
+    
+    state "LangGraph Supervisor Orchestrator" as Supervisor {
+        [*] --> RouterAgent
+        
+        state "Document Intelligence Subgraph" as DocIntel {
+            DocClassify[Document Classifier] --> ClauseClassify[Clause Classifier]
+            ClauseClassify --> ExtractLoop{Is Obligation?}
+            ExtractLoop --> |Yes| StructExtract[Structured Extractor]
+            StructExtract --> ExtractLoop
+            ExtractLoop --> |No| FinalizeDoc[Finalize]
+        }
+        
+        state "Knowledge Extraction Subgraph" as KnowExtract {
+            MapControl[Control Mapping Agent] --> Validate[Framework Validator]
+        }
+        
+        RouterAgent --> DocIntel
+        RouterAgent --> KnowExtract
+        DocIntel --> RouterAgent
+        KnowExtract --> RouterAgent
+    }
+    
+    DocProc --> Supervisor : Trigger Celery Task
+    Supervisor --> HITL[Review Workbench UI]
+```
+
+### 1. Document Intelligence Subgraph
+- **Parser**: PyMuPDF analyzes exact font sizes and bold attributes to dynamically reconstruct heading hierarchies, rather than blindly chunking text.
+- **Fast Classifiers**: `gpt-4o-mini` batches clauses to determine if they contain actionable duties.
+- **Reasoning Extractor**: `gpt-4o` extracts Actor, Action, Object, Deadline, and Risk Level, mapping them explicitly back to exact text citations.
+
+### 2. Knowledge Extraction Subgraph
+- Maps the unstructured obligations to established internal controls (e.g., ISO 27001, SOC2) via semantic reasoning.
+
+---
+
+## 💻 Tech Stack
+
+| Category | Technology |
+|----------|-----------|
+| **Frontend UI** | Next.js 14, React 18, Tailwind CSS v4, Lucide Icons (Glassmorphic dark mode) |
+| **Backend API** | FastAPI, Python 3.12, Uvicorn |
+| **AI Orchestration** | LangGraph, LangChain, OpenAI, Google Gemini |
+| **Database** | PostgreSQL 16, pgvector, SQLAlchemy 2.0, asyncpg |
+| **Task Queue** | Celery, Redis 7 |
+| **Document Proc.**| PyMuPDF (fitz), Tesseract OCR |
+| **DevOps** | Docker, Docker Compose, Alembic |
+
+---
+
+## 🏆 Why CircularOS Wins
+
+1. **Technical Excellence**: It’s not just an API wrapper. It uses true autonomous agent orchestration (LangGraph), distributed task queues (Celery), and async Python architectures suitable for enterprise scale.
+2. **Deep Domain Expertise**: The data models perfectly mirror compliance realities (RBAC, Audit Logs, Soft-deletion, Control Libraries).
+3. **Flawless UI/UX**: A stunning, premium aesthetic featuring micro-animations, split-pane document reviews, and live agent tracing.
+4. **Immediate Market Applicability**: A massive pain point for any financial institution. The dual RegTech (for brokers/banks) and SupTech (for SEBI/RBI) capability creates a holistic ecosystem.
 
 ---
 
 ## 🚀 Quick Start
 
 ```bash
-# 1. Clone and set up environment
+# 1. Clone the repository
 git clone https://github.com/priteshvirat24/CircularOS.git
 cd CircularOS
-cp .env.example .env
-# Ensure you configure your OPENAI_API_KEY in .env
+cp .env.example .env # Add your OPENAI_API_KEY
 
-# 2. Start core infrastructure (PostgreSQL & Redis)
+# 2. Start core infrastructure
 docker compose up -d postgres redis
 
-# 3. Setup Python Backend
+# 3. Setup Backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-
-# 4. Run database migrations
 alembic upgrade head
-
-# 5. Start API server
 uvicorn apps.api.main:app --reload --host 0.0.0.0 --port 8000
 
-# 6. Start Celery worker (in separate terminal)
+# 4. Start Background Worker
 source .venv/bin/activate
 celery -A apps.worker.main worker --loglevel=info
 
-# 7. Start Next.js Frontend (in separate terminal)
-cd apps/web 
-npm install 
-npm run dev
+# 5. Start Frontend
+cd apps/web && npm install && npm run dev
+# Open http://localhost:3000
 ```
-
-### Accessing the System
-- **Web UI**: `http://localhost:3000`
-- **FastAPI Swagger**: `http://localhost:8000/api/docs`
-
----
-
-## 📈 Database Schema (Domain Models)
-
-The domain is heavily structured to maintain a "Single Source of Truth":
-- **Auth**: `User`, `Organization`
-- **Documents**: `RegulatoryDocument`, `DocumentPage`, `Clause`
-- **Obligations**: `Obligation`, `ReviewTask`
-- **Compliance**: `Control`, `Evidence`
-- **Agent Traces**: `ExtractionRun`, `AgentRun` (For LangGraph observability)
-
-All primary keys utilize **UUIDv7**, ensuring they are time-sortable and optimized for database indexing while avoiding sequential ID guessing attacks.
-
----
-*Built for the future of Agentic RegTech.*
