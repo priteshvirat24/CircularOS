@@ -97,11 +97,12 @@ stateDiagram-v2
         [*] --> RouterAgent
         
         state "Document Intelligence Subgraph" as DocIntel {
+            state "Is Obligation?" as ExtractLoopChoice
             DocClassify[Document Classifier] --> ClauseClassify[Clause Classifier]
-            ClauseClassify --> ExtractLoop{Is Obligation?}
-            ExtractLoop --> |Yes| StructExtract[Structured Extractor]
-            StructExtract --> ExtractLoop
-            ExtractLoop --> |No| FinalizeDoc[Finalize]
+            ClauseClassify --> ExtractLoopChoice
+            ExtractLoopChoice --> |Yes| StructExtract[Structured Extractor]
+            StructExtract --> ExtractLoopChoice
+            ExtractLoopChoice --> |No| FinalizeDoc[Finalize]
         }
         
         state "Knowledge Extraction Subgraph" as KnowExtract {
