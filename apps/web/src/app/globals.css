@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+@theme {
+  --color-slate-850: #151e2e;
+  
+  --animate-fade-in: fade-in 0.3s ease-out;
+  --animate-slide-up: slide-up 0.4s ease-out;
+  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@layer base {
+  :root {
+    --background: #0f172a; /* slate-900 */
+    --foreground: #f8fafc; /* slate-50 */
+    
+    --card: #1e293b; /* slate-800 */
+    --card-foreground: #f8fafc;
+    
+    --popover: #1e293b;
+    --popover-foreground: #f8fafc;
+    
+    --primary: #3b82f6; /* blue-500 */
+    --primary-foreground: #ffffff;
+    
+    --secondary: #334155; /* slate-700 */
+    --secondary-foreground: #f8fafc;
+    
+    --muted: #334155;
+    --muted-foreground: #94a3b8; /* slate-400 */
+    
+    --accent: #6366f1; /* indigo-500 */
+    --accent-foreground: #ffffff;
+    
+    --destructive: #ef4444; /* red-500 */
+    --destructive-foreground: #f8fafc;
+    
+    --border: #334155;
+    --input: #1e293b;
+    --ring: #3b82f6;
+  }
+}
+
+@layer base {
+  body {
+    @apply bg-[#0b0f19] text-slate-100 antialiased min-h-screen overflow-x-hidden selection:bg-blue-500/30;
+    /* Subtle background grid pattern for depth */
+    background-image: 
+      linear-gradient(to right, rgba(255,255,255,0.02) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255,255,255,0.02) 1px, transparent 1px);
+    background-size: 50px 50px;
+  }
+}
+
+/* Utilities for Glassmorphism */
+@layer utilities {
+  .glass-panel {
+    @apply bg-slate-900/40 backdrop-blur-xl border border-slate-700/50 shadow-xl;
+  }
+  
+  .glass-card {
+    @apply bg-slate-800/40 backdrop-blur-md border border-slate-700/50 rounded-xl transition-all duration-300 hover:bg-slate-800/60 hover:border-slate-600/50 hover:shadow-lg hover:shadow-blue-500/5;
+  }
+
+  .text-gradient {
+    @apply bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent;
+  }
+}
+
+/* Keyframes for micro-animations */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Custom Scrollbar for dark theme */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.5);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(51, 65, 85, 0.8);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 85, 105, 1);
+}
