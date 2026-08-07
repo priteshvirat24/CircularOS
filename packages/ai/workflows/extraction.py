@@ -14,6 +14,7 @@ import time
 from typing import Literal
 
 import structlog
+from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langgraph.graph import END, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -25,6 +26,19 @@ from packages.ai.schemas import (
 from packages.ai.workflows.states import DocumentExtractionState, AgentRunMetric
 
 logger = structlog.get_logger()
+
+
+def _sum_usage(callback: UsageMetadataCallbackHandler) -> tuple[int, int]:
+    """Sum real input/output token counts recorded by a usage callback.
+
+    Returns (0, 0) if the provider did not report usage metadata.
+    """
+    input_tokens = 0
+    output_tokens = 0
+    for usage in getattr(callback, "usage_metadata", {}).values():
+        input_tokens += usage.get("input_tokens", 0)
+        output_tokens += usage.get("output_tokens", 0)
+    return input_tokens, output_tokens
 
 
 def classify_document(state: DocumentExtractionState) -> dict:
@@ -170,24 +184,31 @@ def extract_obligations(state: DocumentExtractionState) -> dict:
     
     updated_clause = dict(clause)
     metrics = []
-    
+    usage_cb = UsageMetadataCallbackHandler()
+
     try:
-        result: ClauseExtractionResult = llm.invoke(messages)
-        
+        result: ClauseExtractionResult = llm.invoke(
+            messages, config={"callbacks": [usage_cb]}
+        )
+
         # Convert pydantic models to dicts
         obligations = [json.loads(o.model_dump_json()) for o in result.obligations]
-        
+
         updated_clause["obligations"] = obligations
         updated_clause["needs_review"] = result.needs_human_review
         updated_clause["review_reason"] = result.review_reason
-        
+
         duration = int((time.monotonic() - start_time) * 1000)
+        # Real token counts from the provider via the usage callback.
+        # Cost accounting (per-model pricing) is a later phase, so cost_usd
+        # stays 0.0 rather than a fabricated figure.
+        prompt_tokens, completion_tokens = _sum_usage(usage_cb)
         metrics.append(AgentRunMetric(
             agent_name="obligation_extractor",
             model="reasoning",
-            prompt_tokens=1000,
-            completion_tokens=300,
-            cost_usd=0.015,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost_usd=0.0,
             duration_ms=duration,
             error=None
         ))

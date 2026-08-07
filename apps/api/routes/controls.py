@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
 from apps.api.dependencies import get_db, require_role
-from packages.regulatory_core.models.compliance import Control, Evidence
-from packages.regulatory_core.auth.rbac import Role
+from packages.regulatory_core.models.auth import UserRole
+from packages.regulatory_core.models.compliance import Control
 
 router = APIRouter(prefix="/controls", tags=["controls"])
 
@@ -28,7 +28,7 @@ class ControlResponse(BaseModel):
 async def list_controls(
     framework: Optional[str] = Query(None, description="Filter by framework"),
     db: AsyncSession = Depends(get_db),
-    user=Depends(require_role([Role.COMPLIANCE_OFFICER, Role.ANALYST, Role.REVIEWER, Role.AUDITOR]))
+    user=Depends(require_role(UserRole.COMPLIANCE_OFFICER, UserRole.ANALYST, UserRole.REVIEWER, UserRole.AUDITOR))
 ):
     """List controls from the library."""
     query = select(Control).where(Control.deleted_at.is_(None))
@@ -44,7 +44,7 @@ async def list_controls(
 async def get_control(
     control_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user=Depends(require_role([Role.COMPLIANCE_OFFICER, Role.ANALYST, Role.REVIEWER, Role.AUDITOR]))
+    user=Depends(require_role(UserRole.COMPLIANCE_OFFICER, UserRole.ANALYST, UserRole.REVIEWER, UserRole.AUDITOR))
 ):
     """Get a specific control by ID."""
     control = await db.get(Control, control_id)

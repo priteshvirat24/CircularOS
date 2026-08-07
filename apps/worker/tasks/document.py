@@ -90,7 +90,7 @@ async def process_document_async(document_id: str) -> None:
                 )
                 db.add(clause)
             
-            doc.status = DocumentStatus.EXTRACTING
+            doc.status = DocumentStatus.STRUCTURED
             await db.commit()
             
             # 4. Trigger LangGraph extraction

@@ -62,6 +62,15 @@ def get_session_factory():
     return _session_factory
 
 
+def async_session_maker() -> AsyncSession:
+    """Return a new AsyncSession for use outside FastAPI's dependency system.
+
+    Callable form used by worker tasks as ``async with async_session_maker() as db``.
+    The caller is responsible for committing; the session only closes on exit.
+    """
+    return get_session_factory()()
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency for database sessions."""
     session_factory = get_session_factory()

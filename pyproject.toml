@@ -33,11 +33,15 @@ dependencies = [
     # Validation & Settings
     "pydantic>=2.7.0",
     "pydantic-settings>=2.3.0",
+    "email-validator>=2.0.0",
     
     # Authentication
     "python-jose[cryptography]>=3.3.0",
     "passlib[bcrypt]>=1.7.4",
-    "bcrypt>=4.1.0",
+    # passlib 1.7.4 (latest, unmaintained) is incompatible with bcrypt >=4.1:
+    # its backend probe passes a >72-byte secret that bcrypt 4.1+/5.x rejects
+    # with ValueError. Pin to the last compatible bcrypt line.
+    "bcrypt>=4.0.1,<4.1",
     
     # LLM Providers
     "openai>=1.30.0",

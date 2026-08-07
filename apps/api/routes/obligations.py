@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
 from apps.api.dependencies import get_db, require_role
+from packages.regulatory_core.models.auth import UserRole
 from packages.regulatory_core.models.obligations import Obligation, ObligationStatus, ReviewTask
-from packages.regulatory_core.auth.rbac import Role
 
 router = APIRouter(prefix="/obligations", tags=["obligations"])
 
@@ -43,7 +43,7 @@ async def list_obligations(
     status: Optional[str] = Query(None, description="Filter by status (e.g., approved, candidate)"),
     risk_level: Optional[str] = Query(None, description="Filter by risk level"),
     db: AsyncSession = Depends(get_db),
-    user=Depends(require_role([Role.COMPLIANCE_OFFICER, Role.ANALYST, Role.REVIEWER]))
+    user=Depends(require_role(UserRole.COMPLIANCE_OFFICER, UserRole.ANALYST, UserRole.REVIEWER))
 ):
     """List obligations with optional filtering."""
     query = select(Obligation).where(Obligation.deleted_at.is_(None))
@@ -61,7 +61,7 @@ async def list_obligations(
 async def get_obligation(
     obligation_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user=Depends(require_role([Role.COMPLIANCE_OFFICER, Role.ANALYST, Role.REVIEWER]))
+    user=Depends(require_role(UserRole.COMPLIANCE_OFFICER, UserRole.ANALYST, UserRole.REVIEWER))
 ):
     """Get a specific obligation by ID."""
     obligation = await db.get(Obligation, obligation_id)
@@ -75,7 +75,7 @@ async def update_obligation(
     obligation_id: UUID,
     update_data: ObligationUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    user=Depends(require_role([Role.COMPLIANCE_OFFICER, Role.REVIEWER]))
+    user=Depends(require_role(UserRole.COMPLIANCE_OFFICER, UserRole.REVIEWER))
 ):
     """Update an obligation (e.g., after human review)."""
     obligation = await db.get(Obligation, obligation_id)
@@ -102,14 +102,12 @@ async def update_obligation(
 async def delete_obligation(
     obligation_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user=Depends(require_role([Role.COMPLIANCE_OFFICER, Role.ORG_ADMIN]))
+    user=Depends(require_role(UserRole.COMPLIANCE_OFFICER, UserRole.ORG_ADMIN))
 ):
     """Soft delete an obligation."""
     obligation = await db.get(Obligation, obligation_id)
     if not obligation or obligation.deleted_at:
         raise HTTPException(status_code=404, detail="Obligation not found")
         
-    from datetime import datetime, timezone
-    obligation.deleted_at = datetime.now(timezone.utc)
-    obligation.deleted_by = user.id
+    obligation.soft_delete()
     await db.commit()

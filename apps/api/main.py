@@ -24,7 +24,19 @@ from fastapi.responses import ORJSONResponse
 
 from apps.api.config import get_settings
 from apps.api.database import check_db_health
-from apps.api.routes import health, auth, documents, obligations, controls, evidence
+from apps.api.routes import (
+    agents,
+    audit,
+    auth,
+    controls,
+    documents,
+    evidence,
+    health,
+    obligations,
+    organizations,
+    reviews,
+    settings_routes,
+)
 
 logger = structlog.get_logger()
 
@@ -143,13 +155,21 @@ def create_app() -> FastAPI:
         return response
     
     # ── Routes ───────────────────────────────────
-    app.include_router(health.router, prefix="/api/v1")
-    app.include_router(auth.router, prefix="/api/v1")
-    app.include_router(documents.router, prefix="/api/v1")
-    app.include_router(obligations.router, prefix="/api/v1")
-    app.include_router(controls.router, prefix="/api/v1")
-    app.include_router(evidence.router, prefix="/api/v1")
-    
+    # Each domain router mounts under a namespaced prefix. `obligations` and
+    # `controls` declare their own internal prefix, so they mount at the API
+    # root; every other router receives its prefix here.
+    app.include_router(health.router, prefix="/api/v1", tags=["health"])
+    app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
+    app.include_router(organizations.router, prefix="/api/v1/organizations", tags=["organizations"])
+    app.include_router(documents.router, prefix="/api/v1/documents", tags=["documents"])
+    app.include_router(obligations.router, prefix="/api/v1", tags=["obligations"])
+    app.include_router(controls.router, prefix="/api/v1", tags=["controls"])
+    app.include_router(reviews.router, prefix="/api/v1/reviews", tags=["reviews"])
+    app.include_router(evidence.router, prefix="/api/v1/evidence", tags=["evidence"])
+    app.include_router(agents.router, prefix="/api/v1/agents", tags=["agents"])
+    app.include_router(audit.router, prefix="/api/v1/audit", tags=["audit"])
+    app.include_router(settings_routes.router, prefix="/api/v1/settings", tags=["settings"])
+
     return app
 
 

@@ -19,8 +19,9 @@ from packages.regulatory_core.models.documents import (
     Clause, DocumentStatus, RegulatoryDocument, DocumentType, RegulatoryDomain
 )
 from packages.regulatory_core.models.obligations import (
-    Obligation, ObligationStatus, ReviewTask
+    Obligation, ObligationCitation, ObligationStatus, ReviewTask
 )
+from apps.api.config import get_settings
 from packages.ai.workflows.extraction import build_extraction_graph
 from packages.ai.workflows.states import DocumentExtractionState, ClauseData
 
@@ -143,16 +144,30 @@ async def run_extraction_workflow_async(document_id: str) -> None:
                         frequency=obs_dict.get("frequency"),
                         deadline_description=obs_dict.get("deadline_description"),
                         extraction_method="agentic_workflow",
-                        model="gpt-4o",
+                        model=get_settings().reasoning_model_name,
                     )
-                    
+
                     try:
                         from packages.regulatory_core.models.obligations import RiskLevel
                         if risk_str := obs_dict.get("risk_level"):
                             obl.risk_level = RiskLevel(risk_str.lower())
                     except ValueError:
                         pass
-                    
+
+                    # Persist the model's exact-quote citations as verifiable
+                    # provenance rows tied to this obligation and clause.
+                    for cit in obs_dict.get("citations", []):
+                        cited_text = cit.get("exact_quote")
+                        if not cited_text:
+                            continue
+                        obl.citations.append(
+                            ObligationCitation(
+                                field_name=(cit.get("field_name") or "unknown")[:100],
+                                cited_text=cited_text,
+                                clause_id=uuid.UUID(state_clause["id"]),
+                            )
+                        )
+
                     # Handle Review logic
                     if state_clause.get("needs_review"):
                         obl.status = ObligationStatus.CANDIDATE
@@ -209,8 +224,8 @@ async def run_extraction_workflow_async(document_id: str) -> None:
             run.total_tokens = total_tokens
             run.total_cost_usd = total_cost
             
-            doc.status = DocumentStatus.EXTRACTED
-            
+            doc.status = DocumentStatus.PROCESSED
+
             await db.commit()
             logger.info("extraction_workflow_completed", run_id=str(run.id), obligations=run.total_obligations)
 
