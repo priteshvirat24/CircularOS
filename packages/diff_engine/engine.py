@@ -19,7 +19,10 @@ from packages.diff_engine.semantic_diff import (
 from packages.diff_engine.structural_diff import align_sections
 from packages.diff_engine.text_diff import text_diff
 from packages.diff_engine.types import ChangeRow, DiffResult
-from packages.policy_engine.changes import MaterialityLevel
+from packages.policy_engine.changes import MaterialityLevel, ObligationFields
+
+# Extracted obligations keyed by top-level section number, one map per document side.
+ObligationMap = dict[int, list[ObligationFields]]
 
 # Similarity floor for a Level-3 semantic match. Calibrated on the real Aug→Jun gold pair:
 # the true MODIFIED (§31→§32, "…Members/ Sub-Brokers" → "…Members") sits at sim≈0.79, while
@@ -34,6 +37,8 @@ def run_diff_pipeline(
     new_text: str,
     tau: float = DEFAULT_TAU,
     embed_similarity: SimilarityFn | None = None,
+    old_obligations: ObligationMap | None = None,
+    new_obligations: ObligationMap | None = None,
 ) -> DiffResult:
     notes: list[str] = []
     sim_fn, backend = safe_similarity_backend(embed_similarity)
@@ -66,10 +71,16 @@ def run_diff_pipeline(
         removed_idx = list(lo)
 
     # ── Level 4: obligation-level classification + materiality ──────────────
+    old_obl = old_obligations or {}
+    new_obl = new_obligations or {}
     changes: list[ChangeRow] = []
     cosmetic_suppressed = 0
     for i, j, s in matched:
-        row = diff_pair(old_secs[i], new_secs[j], s)
+        row = diff_pair(
+            old_secs[i], new_secs[j], s,
+            old_obls=old_obl.get(old_secs[i].number),
+            new_obls=new_obl.get(new_secs[j].number),
+        )
         if row is None:
             cosmetic_suppressed += 1
         else:

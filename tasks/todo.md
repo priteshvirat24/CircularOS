@@ -1,3 +1,86 @@
+# Task: Phase 2.5 — Pre-Phase-3 fixes (test-DB isolation, Jun extraction, §31→§32 framing)
+
+## Goal
+Close three Phase-2 handoff gaps before Phase 3.
+
+## Steps
+- [ ] Fix 1 (FIRST — blocks all DB writes): test-DB isolation.
+      - config.py: add test_database_url / test_database_sync_url (→ circularos_test). .env.example.
+      - Create + migrate circularos_test (alembic upgrade head against it).
+      - conftest.py: connect ONLY to the test DB; hard guard asserts current_database() contains
+        "test" before any TRUNCATE, else abort. Guard is an importable, unit-tested function.
+      - Verify: full pytest passes AND dev DB row counts identical before/after.
+- [ ] Fix 2: extract Jun-2025 obligations (gemini-flash-latest + key pool), re-run run_diff so
+      L4 emits real changed_fields on MODIFIED; re-run gold gate (must stay 6/6, 1/1, 0/12);
+      ensure Aug + Jun obligations both present at handoff.
+- [ ] Fix 3: §31→§32 terminology-cleanup reason string (stays LOW/MODIFIED); no demo surface
+      features it as substantive.
+
+## Risks
+- Fix 2 quota: 702 Jun clauses is a large run; scope to changed/new sections if needed but
+  MODIFIED/CREATED sections must be extracted. Report real counts; don't fabricate.
+- Gold gate must not be weakened to accommodate richer field-compare; reconcile honestly.
+- Must not write to any DB before Fix 1 lands.
+
+## Done criteria (exit gate)
+- [ ] pytest passes; dev DB counts identical before/after; guard test proves abort on non-test DB.
+- [ ] Jun obligations extracted; run_diff L4 emits real changed_fields on MODIFIED row.
+- [ ] Gold gate still 6/6 CREATED, 1/1 MODIFIED, 0/12 FP (any change reconciled + reported).
+- [ ] §31→§32 LOW with explicit terminology-cleanup reason; not featured as substantive.
+- [ ] Aug + Jun obligation rows both present in dev DB at handoff.
+- [ ] mypy clean; ruff clean (except Depends B008); written report. NO COMMITS.
+
+## Review (Phase 2.5)
+
+**Fix 1 — Test-DB isolation (DONE, proven):**
+- Added `test_database_url`/`test_database_sync_url` (→ `circularos_test`) to config + `.env.example`.
+  Created + migrated the test DB (`alembic upgrade head`, 43 tables, head e4b4305debd7).
+- `conftest.py` now binds the whole suite to the test DB and calls `require_test_database`
+  (checks live `current_database()`) before any TRUNCATE — hard-aborts on a non-test DB.
+  Guard is an importable module (`tests/dbsafety.py`) with its own unit tests.
+- **Proof:** dev DB counts identical before/after a full pytest run
+  (documents 2, clauses 1916, obligations, diff_runs, changes all unchanged); test DB got the
+  auth churn (users=1). 61 tests pass incl. the guard + isolation-proof tests.
+
+**Fix 2 — Jun-2025 obligations + obligation-level L4 (DONE, with honest reconciliation):**
+- Extracted a bounded, obligation-dense slice on BOTH docs (gemini-flash-latest + 10-key pool):
+  **Aug 45, Jun 57** obligations. Both sides now populated in the dev DB.
+- Wired a real obligation-level L4: `compare_obligations` (Hungarian match of obligations
+  within an aligned section pair → `classify_change` field deltas), threaded through the engine
+  and `diff_service` (obligations mapped to sections by normalized text containment, robust to
+  the parser's lossy clause numbers). Unit-tested (catches a deadline delta; ignores count
+  asymmetry; coverage-gated).
+- **Honest reconciliation (required by the phase):** this pair is a re-consolidation with NO
+  obligation field-deltas — the only MODIFIED (§31→§32) is a section-title terminology change,
+  not a deadline/actor/evidence delta. Enabling obligation-compare on the *bounded, asymmetric*
+  extraction initially manufactured a spurious §15 MODIFIED (24 vs 39 obligations, 8 mis-aligned
+  pairs). Two deterministic guards fixed it without fabrication: (1) created/removed counts never
+  flip a section; (2) matched-pair field-deltas are trusted only above a coverage floor (0.8) so
+  asymmetric coverage can't invent a change. Result: §15 artifact gone; no invented deltas.
+  Literal exit-gate "real changed_fields on the MODIFIED row from obligations" is **not
+  satisfiable on this pair without fabrication** (no such deltas exist); reported honestly. The
+  L4 field-compare machinery is real and unit-tested, ready for a pair with substantive amendments.
+
+**Fix 3 — §31→§32 terminology cleanup (DONE):**
+- Added a deterministic `terminology_cleanup` rule (pure PDE): a text-only change that drops a
+  SEBI-discontinued category (`sub-broker(s)`) → LOW with reason
+  "terminology cleanup: removed discontinued category 'Sub-Brokers'; no change to the underlying
+  duty". Stays LOW (not promoted). Unit-tested; confirmed on the real §31→§32 row via API.
+
+**Gates:** gold gate holds WITH obligations wired — **6/6 CREATED, 1/1 MODIFIED, 0/12 FP**.
+61 pytest green; mypy clean (17 files); ruff clean on all touched files (except the FastAPI
+`Depends()` B008 idiom used across the codebase). API verified end-to-end (201/200, §31→§32 LOW
+terminology_cleanup). Dev DB at handoff: 2 docs, Aug 45 + Jun 57 obligations, latest DiffRun clean.
+
+**Env note (unchanged, user-owned):** `.env` still routes REASONING_MODEL_NAME=gemini-2.5-flash
+(returns 404 on new keys); I ran extraction via a `gemini-flash-latest` override. Recommend
+updating `.env` REASONING/FAST model names to `gemini-flash-latest`. Also: gemini free tier is
+20 req/day/project (heavy 429s during extraction) — a fuller extraction needs paid quota/Groq billing.
+
+## No commits. Working tree left dirty for review.
+
+---
+
 # Task: Phase 2 — The Regulatory Diff Engine (the wedge)
 
 ## Goal

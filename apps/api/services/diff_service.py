@@ -17,13 +17,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.database import async_session_maker
 from packages.diff_engine import run_diff_pipeline
+from packages.diff_engine.sections import assign_to_sections, extract_sections
 from packages.diff_engine.types import ChangeRow, DiffResult
+from packages.policy_engine.changes import ObligationFields
 from packages.regulatory_core.models.documents import DocumentPage, RegulatoryDocument
 from packages.regulatory_core.models.obligations import (
     ChangeType,
     DiffRun,
     DiffRunStatus,
     MaterialityLevel,
+    Obligation,
     RegulatoryChange,
 )
 
@@ -40,6 +43,50 @@ async def _load_document_text(db: AsyncSession, document_id: uuid.UUID) -> str:
         )
     ).all()
     return "\n".join(r[0] for r in rows if r[0])
+
+
+def _obligation_fields(o: Obligation) -> ObligationFields:
+    """Build the pure, comparable ObligationFields from a persisted Obligation row."""
+    raw_evidence = o.evidence_requirements
+    evidence: str | None
+    if isinstance(raw_evidence, list):
+        evidence = "; ".join(str(x) for x in raw_evidence) or None
+    else:
+        evidence = raw_evidence
+    return ObligationFields(
+        normalized_obligation=o.normalized_obligation or "",
+        actor=o.actor,
+        action=o.action,
+        object=o.object,
+        conditions=tuple(o.conditions or ()),
+        exceptions=tuple(o.exceptions or ()),
+        frequency=o.frequency,
+        deadline=o.deadline_description,
+        evidence_requirement=evidence,
+        penalty_reference=o.penalty_reference,
+        applicability=tuple(o.applicability or ()),
+        risk_level=o.risk_level.value if o.risk_level else None,
+    )
+
+
+async def _load_obligation_map(
+    db: AsyncSession, document_id: uuid.UUID, doc_text: str
+) -> dict[int, list[ObligationFields]]:
+    """Map a document's extracted obligations to their top-level section number.
+
+    Uses text containment (each obligation's source clause text located within a section body),
+    which is robust to the parser's lossy clause numbering. Empty when nothing is extracted yet.
+    """
+    obls = (
+        await db.execute(select(Obligation).where(Obligation.document_id == document_id))
+    ).scalars().all()
+    if not obls:
+        return {}
+    sections = extract_sections(doc_text, max_body_chars=20000)
+    items: list[tuple[str, object]] = [(o.source_text or "", _obligation_fields(o)) for o in obls]
+    raw = assign_to_sections(sections, items)
+    return {num: [x for x in payloads if isinstance(x, ObligationFields)]
+            for num, payloads in raw.items()}
 
 
 def change_row_to_model(
@@ -104,7 +151,16 @@ async def run_diff_async(
             if not old_text or not new_text:
                 raise ValueError("one or both documents have no extracted page text")
 
-            result: DiffResult = run_diff_pipeline(old_text, new_text)
+            # Extracted obligations (when present on both sides) drive the L4 field-level compare;
+            # absent, the engine falls back to section-title comparison. Either way is deterministic.
+            old_obl_map = await _load_obligation_map(db, old_id, old_text)
+            new_obl_map = await _load_obligation_map(db, new_id, new_text)
+
+            result: DiffResult = run_diff_pipeline(
+                old_text, new_text,
+                old_obligations=old_obl_map,
+                new_obligations=new_obl_map,
+            )
 
             for row in result.changes:
                 db.add(change_row_to_model(row, run.id, old_id, new_id))

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 
-from packages.diff_engine.normalize import strip_footnote_number
+from packages.diff_engine.normalize import normalize_for_match, strip_footnote_number
 from packages.diff_engine.types import SectionUnit
 
 _ROMAN_PART = re.compile(r"^\s*[IVXL]+\.\s")
@@ -92,6 +92,31 @@ def locate_body_spans(text: str) -> dict[int, tuple[int, int]]:
         if num not in spans or (end - start) > (spans[num][1] - spans[num][0]):
             spans[num] = (start, end)
     return spans
+
+
+def assign_to_sections(
+    sections: list[SectionUnit],
+    items: list[tuple[str, object]],
+) -> dict[int, list[object]]:
+    """Group ``(probe_text, payload)`` items by the section whose body contains the probe.
+
+    Deterministic mapping used to attach extracted obligations to their top-level section when
+    the parser's clause numbering is too lossy to key on (each obligation's source clause text is
+    matched into a section body). Items matching no section body are dropped from the result.
+    """
+    out: dict[int, list[object]] = {}
+    # Normalize both sides (whitespace/case/quotes) so parser clause text matches the section
+    # body despite PDF line-wrapping differences.
+    bodies = [(s.number, normalize_for_match(s.body)) for s in sections if s.body]
+    for probe_text, payload in items:
+        probe = normalize_for_match(probe_text)[:120]
+        if len(probe) < 20:
+            continue
+        for number, body in bodies:
+            if probe in body:
+                out.setdefault(number, []).append(payload)
+                break
+    return out
 
 
 def extract_sections(text: str, max_body_chars: int = 4000) -> list[SectionUnit]:

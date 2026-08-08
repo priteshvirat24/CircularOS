@@ -185,6 +185,29 @@ def test_wording_clarified_low():
     assert any(r["rule"] == "wording_clarified" for r in m.reasons)
 
 
+def test_terminology_cleanup_low_with_explicit_reason():
+    # The real §31→§32 case: a discontinued category ("Sub-Brokers") dropped from the title,
+    # no structured field changed. LOW, tagged as terminology cleanup (not a substantive change).
+    old = mk(normalized_obligation="Review of norms relating to trading by Members/ Sub-Brokers",
+             object="Review of norms relating to trading by Members/ Sub-Brokers")
+    new = mk(normalized_obligation="Review of norms relating to trading by Members",
+             object="Review of norms relating to trading by Members")
+    v = classify_change(old, new)
+    m = assess_materiality(v, old, new)
+    assert m.level is MaterialityLevel.LOW
+    reason = next(r for r in m.reasons if r["rule"] == "terminology_cleanup")
+    assert "Sub-Brokers" in reason["detail"]
+    assert "no change to the underlying duty" in reason["detail"]
+
+
+def test_wording_change_without_discontinued_term_is_plain_clarification():
+    old = mk(normalized_obligation="brokers shall report", object="the margin")
+    new = mk(normalized_obligation="brokers must report", object="the margin amount")
+    m = assess_materiality(classify_change(old, new), old, new)
+    assert m.level is MaterialityLevel.LOW
+    assert {r["rule"] for r in m.reasons} == {"wording_clarified"}
+
+
 def test_cosmetic_no_field_change_is_none():
     a = mk(normalized_obligation="same", actor="TM")
     v = classify_change(a, a)

@@ -146,6 +146,67 @@ def test_real_pair_meets_goldset_exit_gate():
     assert m["cosmetic_false_positives"] == [], m["cosmetic_false_positives"]
 
 
+def test_obligation_level_compare_catches_field_delta():
+    """The L4 obligation compare catches a real deadline tightening within an aligned section."""
+    from packages.diff_engine.obligation_diff import compare_obligations
+    from packages.policy_engine.changes import MaterialityLevel, ObligationFields
+
+    old = [ObligationFields(normalized_obligation="report client margin to the exchange",
+                            actor="Trading Member", deadline="T+1")]
+    new = [ObligationFields(normalized_obligation="report client margin to the exchange",
+                            actor="Trading Member", deadline="T+0")]
+    r = compare_obligations(old, new)
+    assert r.n_matched == 1
+    assert "deadline" in r.field_deltas
+    assert r.max_materiality is MaterialityLevel.HIGH
+    assert r.has_field_delta
+
+
+def test_obligation_compare_identical_obligations_no_delta():
+    """Re-consolidation case: same duty on both sides → no field delta, not substantive."""
+    from packages.diff_engine.obligation_diff import compare_obligations
+    from packages.policy_engine.changes import ObligationFields
+
+    same = [ObligationFields(normalized_obligation="maintain records for 5 years",
+                             actor="Stock Broker", frequency="continuous")]
+    r = compare_obligations(same, list(same))
+    assert r.field_deltas == []
+    assert not r.has_field_delta
+
+
+def test_diff_pair_folds_obligation_delta_into_row():
+    """When section titles match but an obligation field changed, the row still reports it."""
+    from packages.diff_engine.obligation_diff import diff_pair
+    from packages.diff_engine.types import SectionUnit
+    from packages.policy_engine.changes import MaterialityLevel, ObligationFields
+
+    old_sec = SectionUnit(number=40, title="Collection and reporting of margins", body="x")
+    new_sec = SectionUnit(number=40, title="Collection and reporting of margins", body="x")
+    old_o = [ObligationFields(normalized_obligation="report margin", deadline="T+1")]
+    new_o = [ObligationFields(normalized_obligation="report margin", deadline="T+0")]
+    row = diff_pair(old_sec, new_sec, 1.0, old_obls=old_o, new_obls=new_o)
+    assert row is not None
+    assert "deadline" in row.changed_fields
+    assert row.materiality is MaterialityLevel.HIGH
+    assert row.citations["obligation_compare"]["field_deltas"] == ["deadline"]
+
+
+def test_cosmetic_section_not_flipped_by_asymmetric_obligation_counts():
+    """A renumbered-but-identical section must stay suppressed even if one side has more
+    obligations extracted than the other (a bounded-extraction artifact, not a real change)."""
+    from packages.diff_engine.obligation_diff import diff_pair
+    from packages.diff_engine.types import SectionUnit
+    from packages.policy_engine.changes import ObligationFields
+
+    old_sec = SectionUnit(number=18, title="Enhanced obligations on QSBs", body="x")
+    new_sec = SectionUnit(number=19, title="Enhanced obligations on QSBs", body="x")  # renumbered
+    old_o = [ObligationFields(normalized_obligation="qsb duty one"),
+             ObligationFields(normalized_obligation="qsb duty two")]
+    new_o = [ObligationFields(normalized_obligation="qsb duty one")]  # only one extracted
+    row = diff_pair(old_sec, new_sec, 1.0, old_obls=old_o, new_obls=new_o)
+    assert row is None  # not flipped by the count asymmetry
+
+
 def test_embedding_backend_degrades_gracefully():
     def broken(_a, _b):
         raise RuntimeError("embedding provider down")

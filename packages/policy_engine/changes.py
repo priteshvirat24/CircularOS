@@ -217,6 +217,28 @@ _MATERIAL_FIELDS = {
     "evidence_requirement", "penalty_reference", "conditions", "exceptions", "action",
 }
 
+# Regulatory categories SEBI has formally discontinued. When a text-only change merely drops
+# one of these from an obligation's wording (and no structured field changed), it is a
+# terminology cleanup, not a change to the underlying duty — LOW, with an explicit reason.
+# Keyed by normalized (casefolded, dash-folded) form → human-readable label.
+_DISCONTINUED_TERMS = {
+    "sub-broker": "Sub-Brokers",
+    "sub-brokers": "Sub-Brokers",
+}
+
+
+def _discontinued_terms_removed(
+    old: ObligationFields, new: ObligationFields
+) -> list[str]:
+    """Labels of discontinued categories present in old wording but absent from new."""
+    old_text = f"{_norm_text(old.normalized_obligation)} {_norm_text(old.object)}"
+    new_text = f"{_norm_text(new.normalized_obligation)} {_norm_text(new.object)}"
+    removed: list[str] = []
+    for term, label in _DISCONTINUED_TERMS.items():
+        if term in old_text and term not in new_text and label not in removed:
+            removed.append(label)
+    return removed
+
 
 def assess_materiality(
     change: ChangeVerdict,
@@ -332,11 +354,19 @@ def assess_materiality(
         fire("action_changed", MaterialityLevel.MEDIUM, ["action"],
              "the required action changed")
 
-    # wording_clarified — only descriptive text changed, no material field fired
+    # Descriptive-text-only change (no material field fired). Distinguish a terminology cleanup
+    # (a discontinued category dropped from the wording) from a generic wording clarification —
+    # both LOW, but the cleanup carries a precise, regulator-legible reason.
     if not levels:
-        text_only = changed - _MATERIAL_FIELDS
-        fire("wording_clarified", MaterialityLevel.LOW, sorted(text_only),
-             "wording clarified; no structured field changed")
+        text_only = sorted(changed - _MATERIAL_FIELDS)
+        removed = _discontinued_terms_removed(old, new)
+        if removed:
+            fire("terminology_cleanup", MaterialityLevel.LOW, text_only,
+                 f"terminology cleanup: removed discontinued category "
+                 f"{', '.join(repr(t) for t in removed)}; no change to the underlying duty")
+        else:
+            fire("wording_clarified", MaterialityLevel.LOW, text_only,
+                 "wording clarified; no structured field changed")
 
     return _finalize(levels, reasons)
 
