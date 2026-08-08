@@ -53,6 +53,15 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://circularos:circularos_dev@localhost:5433/circularos"
     database_sync_url: str = "postgresql://circularos:circularos_dev@localhost:5433/circularos"
 
+    # Dedicated test database — the pytest suite connects here ONLY, never the dev DB, so its
+    # destructive TRUNCATE ... CASCADE cleanup can never touch real corpus data.
+    test_database_url: str = (
+        "postgresql+asyncpg://circularos:circularos_dev@localhost:5433/circularos_test"
+    )
+    test_database_sync_url: str = (
+        "postgresql://circularos:circularos_dev@localhost:5433/circularos_test"
+    )
+
     # ── Redis ────────────────────────────────────
     redis_url: str = "redis://localhost:6380/0"
     celery_broker_url: str = "redis://localhost:6380/1"
