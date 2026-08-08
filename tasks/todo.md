@@ -1,3 +1,125 @@
+# Task: Phase 3 — Verification Loop + Policy Decision Engine
+
+## Goal
+Make every extraction verdict auditable: deterministic citation verification, thresholded
+entailment, one-pass independent critic, logistic confidence routing, fixed orchestration,
+and deterministic blast-radius persistence on the existing partial corpus and real changes.
+
+## Pre-step 0 (attempt, then proceed partial)
+- [x] Persist model routing: Gemini `gemini-flash-latest` for fast/reasoning; Groq
+      `openai/gpt-oss-120b` for the independent critic. Mirror in `.env.example`.
+- [x] User confirmed both Gemini and Groq are free-tier only; extraction must operate
+      within those quotas.
+- [ ] Run full both-sides extraction (Aug target approximately 106; Jun full), with no
+      quota-truncated slices and no fabricated counts.
+      - 2026-08-09: resumable section extraction checkpointed Aug 94/94 sections with
+        544 candidates and Jun 44/98 sections with 250 candidates. All configured Gemini
+        projects then returned the explicit 20 requests/project/model daily cap. The live
+        registry remains unchanged at Aug 45 / Jun 57; no partial checkpoint was published.
+        Revised Phase-3 posture: keep the checkpoint and proceed on Aug 45 / Jun 57 plus
+        synthetic fixtures. Full-corpus numbers remain deferred, never inferred.
+- [ ] Re-run the real-pair gold gate at full coverage. Required result remains 6/6 CREATED,
+      1/1 MODIFIED, 0/12 cosmetic false positives; reconcile without weakening guards.
+
+## Vertical slices
+- [x] Pure PDE: citation matcher (`EXACT`/`NORMALIZED`/`FUZZY`/`NOT_FOUND`) with original
+      offsets and documented tau=0.95; Unicode/noise/boundary tests.
+- [x] Pure PDE: parameterized logistic confidence model, deterministic bands/factors, and
+      the invalid-citation hard gate to score 0; tests for gates and banding.
+- [x] Pure PDE: deterministic graph reachability for controls/processes/evidence/calendar,
+      inherited materiality, named path; tests including cycles/unreachable nodes.
+- [x] Verification workflow: citation check → entailment signal → one bounded Groq critic
+      pass → PDE confidence/routing. Persist every signal and visible failure reason.
+- [x] Persistence using existing models: verification provenance and immutable review/audit trail;
+      no I/O in `packages/policy_engine/`.
+- [x] Replace the LLM supervisor/dummy nodes with fixed real orchestration.
+- [x] Impact service/node: load an in-memory organization graph, seed minimal real controls
+      only when absent, resolve material changes, and persist `ImpactAssessment` links.
+
+## Risks and invariants
+- Full paid-quota extraction is deferred to Phase 4.5. Phase 3 proves the architecture on
+  Aug 45 / Jun 57 plus fixtures and labels every partial metric explicitly.
+- LLM outputs are signals only. Citation validity, confidence band/routing, change kind,
+  materiality, and blast radius remain deterministic.
+- Keep critic bounded to one pass and on a different provider/model family.
+- Preserve the Phase-2.5 coverage floor (0.8) and created/removed-never-flip guards.
+- Preserve test-DB isolation and prove dev row counts unchanged across the full suite.
+
+## Done criteria
+- [x] Pure PDE tests cover all specified branches; policy engine has no DB/network/file I/O.
+- [x] Partial Aug citation pass rate is 44/45 (97.78%); the failure routed visibly to reject.
+- [x] Stored entailment, critic output, confidence distribution, and an example bad-citation
+      rejection are reportable from real runs.
+- [x] Fixed supervisor has no LLM routing or dummy nodes.
+- [x] At least one real material change persists a blast radius through control/evidence/calendar.
+- [x] Full pytest green on isolated test DB; dev counts unchanged; mypy and ruff clean.
+- [x] Final report includes real corpus counts, citation rate, confidence distribution,
+      gold-gate numbers, orchestration proof, DB-isolation proof, and Phase 4 handoff.
+- [x] No staging, commits, pushes, or other git-state/history mutations.
+
+## Phase 4.5 — Full-Corpus Eval Run (paid, one shot)
+- [ ] Resume `scripts/extract_obligations_full.py` and complete/publish both circulars.
+- [ ] Run verification across the full published corpus and report the final citation-
+      verification rate (replace the Phase-3 partial-only label).
+- [ ] Re-run the full-coverage diff gold gate: 6/6 CREATED, 1/1 MODIFIED, 0/12 cosmetic FP;
+      reconcile honestly without weakening the 0.8 coverage or created/removed guards.
+- [ ] Run Phase-4 extraction P/R/F1 evaluation on the full gold set.
+- [ ] Fit and calibrate the logistic confidence parameters; export
+      `data/goldsets/confidence_params.json` and report calibration metrics.
+- [ ] Execute this as one paid batch near submission, before demo/video capture; until then
+      every full-corpus metric surface must say `pending full-corpus run`.
+
+## Review (Phase 3)
+
+**Free-tier/corpus posture:** `.env` and `.env.example` permanently route fast/reasoning to
+`gemini-flash-latest` and the independent critic to Groq `openai/gpt-oss-120b`. The resumable
+full extraction reached Aug 94/94 sections (544 checkpoint candidates) and Jun 44/98 (250),
+then every Gemini project returned its explicit daily cap. Checkpoints were retained and not
+published; live obligation counts stayed **Aug 45 / Jun 57**. No paid provider was used.
+
+**Pure Policy Decision Engine:** added deterministic citation matching, thresholded
+entailment, parameterized logistic confidence, and cycle-safe blast-radius reachability.
+The hand-labelled citation set has 24 cases from 12 real Aug obligations. The selected
+**tau=0.95** point is 12 TP / 0 FP / 0 FN; tau=0.94 admits 3 FP. `NOT_FOUND` is an absolute
+invalid-citation gate and forces confidence to zero. Confidence parameters remain explicitly
+`phase3-default-unfitted`; fitting/calibration is a Phase-4.5 deliverable.
+
+**Partial-corpus verification run (NOT the final headline metric):** run
+`019fe34d-b80b-7101-92da-3ab35e04a5d9` processed all **45 Aug obligations** through citation
+span match → Groq entailment signal → one bounded Groq critic pass → deterministic confidence
+and routing. Citation verification passed **44/45 = 97.78% (partial corpus)**. Routes:
+**9 auto-register, 32 human review, 4 reject**. Confidence bands: **9 HIGH, 12 MEDIUM,
+24 LOW**; thresholded entailment: 14 entailment, 28 neutral, 3 contradiction; critic raised
+27 substantive objections. Persistence proof: 180 validation rows, 90 model-invocation rows,
+225 workflow events, 36 review tasks, and 45 immutable routing audit events; recorded model
+cost is **$0.00**.
+
+**Visible anti-hallucination example:** obligation
+`019fe15f-bd69-7c9d-88e5-1637ed626d0e` claimed the action citation “obtains from the internal
+auditor the following details and shares the same with the Stock Exchange”. Its best source
+score was 0.624 (<0.95), so the PDE returned `NOT_FOUND`, span `null`, confidence 0, and
+route `reject`; neither entailment nor critic could rescue it.
+
+**Orchestration/impact:** `supervisor.py` contains no LLM router or dummy nodes; configured
+workers run once in a fixed order and stop on failure. Every change in the latest five-change
+diff run has a persisted deterministic `ImpactAssessment`. Real §17 has a HIGH named path
+through one persisted control → process → internal-audit evidence requirement → recurring
+calendar deadline. §71, §72, §88, and §31→§32 are assessed with absent organization links
+explicitly empty rather than fabricated. The last proven gold gate remains **6/6 CREATED,
+1/1 MODIFIED, 0/12 FP** on the current partial registry; the full-coverage re-run is visibly
+pending Phase 4.5.
+
+**Quality/isolation proof:** **85 pytest tests pass** on `circularos_test`. Dev counts were
+identical immediately before/after the suite: documents 2, clauses 1,916, obligations 102,
+diff runs 4, changes 21. Ruff is clean on all touched files; mypy is clean on 13 source files.
+No Git staging/history mutation was performed.
+
+**Next:** Phase 4 code can build evaluation/reporting around these stored signals. The only
+final-number batch remains Phase 4.5: full extraction/publication → reportable full-corpus
+citation rate → full-coverage gold gate → Phase-4 P/R/F1 → fitted/calibrated confidence params.
+
+---
+
 # Task: Phase 2.5 — Pre-Phase-3 fixes (test-DB isolation, Jun extraction, §31→§32 framing)
 
 ## Goal
