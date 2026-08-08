@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
 import structlog
@@ -28,8 +29,20 @@ from packages.ai.workflows.states import DocumentExtractionState, ClauseData
 logger = structlog.get_logger()
 
 
-async def run_extraction_workflow_async(document_id: str) -> None:
-    """Execute the full document intelligence LangGraph."""
+async def run_extraction_workflow_async(
+    document_id: str,
+    clause_ids: Sequence[uuid.UUID] | None = None,
+) -> None:
+    """Execute the full document intelligence LangGraph.
+
+    Args:
+        document_id: The regulatory document to extract obligations from.
+        clause_ids: Optional subset of the document's clauses to run through the
+            graph. When ``None`` (default) every clause is processed. Passing an
+            explicit subset bounds LLM cost — essential for very large master
+            circulars (1000+ clauses) whose full classification pass would exceed
+            free-tier daily request limits.
+    """
     async with async_session_maker() as db:
         doc = await db.get(RegulatoryDocument, uuid.UUID(document_id))
         if not doc:
@@ -46,12 +59,15 @@ async def run_extraction_workflow_async(document_id: str) -> None:
         )
         db.add(run)
         
-        # Load clauses
-        clauses_result = await db.execute(
+        # Load clauses (optionally bounded to a caller-supplied subset)
+        clause_query = (
             select(Clause)
             .where(Clause.document_id == doc.id)
             .order_by(Clause.order_index)
         )
+        if clause_ids is not None:
+            clause_query = clause_query.where(Clause.id.in_(list(clause_ids)))
+        clauses_result = await db.execute(clause_query)
         db_clauses = clauses_result.scalars().all()
         
         # Build initial state

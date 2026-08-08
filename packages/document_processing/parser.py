@@ -14,6 +14,30 @@ import structlog
 
 logger = structlog.get_logger()
 
+# Lone UTF-16 surrogates (U+D800–U+DFFF) and NUL bytes are valid Python str code
+# points but PostgreSQL text/JSONB columns reject them ("Unicode low surrogate
+# must follow a high surrogate"). PyMuPDF occasionally emits lone surrogates for
+# glyphs with broken ToUnicode maps. Strip them so real documents ingest cleanly.
+_INVALID_CHARS = re.compile(r"[\ud800-\udfff\x00]")
+
+
+def _sanitize(text: str) -> str:
+    """Remove characters that PostgreSQL cannot store (lone surrogates, NUL)."""
+    if not text:
+        return text
+    return _INVALID_CHARS.sub("", text)
+
+
+def _sanitize_deep(value):
+    """Recursively sanitize strings inside nested list/dict table structures."""
+    if isinstance(value, str):
+        return _sanitize(value)
+    if isinstance(value, list):
+        return [_sanitize_deep(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _sanitize_deep(v) for k, v in value.items()}
+    return value
+
 
 @dataclass
 class ParsedPage:
@@ -100,7 +124,7 @@ def parse_pdf(file_path: str) -> ParsedDocument:
         page_num = page_idx + 1
         
         # Extract text
-        text = page.get_text("text")
+        text = _sanitize(page.get_text("text"))
         word_count = len(text.split()) if text.strip() else 0
         
         if not text.strip():
@@ -131,7 +155,7 @@ def parse_pdf(file_path: str) -> ParsedDocument:
                         if flags & 2**4:  # Bold flag
                             is_bold = True
                 
-                block_text = block_text.strip()
+                block_text = _sanitize(block_text.strip())
                 if not block_text:
                     continue
                 
@@ -170,11 +194,11 @@ def parse_pdf(file_path: str) -> ParsedDocument:
         if has_tables:
             for table in tables.tables:
                 try:
-                    table_data.append({
+                    table_data.append(_sanitize_deep({
                         "rows": len(table.cells) if hasattr(table, 'cells') else 0,
                         "header": table.header.names if hasattr(table, 'header') and table.header else [],
                         "data": table.extract()[:10],  # First 10 rows
-                    })
+                    }))
                 except Exception:
                     pass
         

@@ -1,64 +1,90 @@
-## Task: Phase 0 — Get CircularOS running end-to-end for real
+# Task: Phase 1 — Real Corpus + The Gold Set (credibility foundation)
 
-## Goal: Take the scaffold from "looks like it runs" to "actually runs end-to-end on real API keys," and wire the existing-but-unmounted routers. No new features.
+## Goal
+Load the real SEBI stockbroker master circular PAIR (Aug-2024 → Jun-2025) and build the
+hand-annotated gold set (~120–150 obligations) + labeled change-set (~20–30 changes + ~10
+cosmetic non-changes), grounded entirely in real PDF text. Load into the eval tables.
 
-### Steps
-- [ ] 1. Environment: create `.env` from `.env.example` (strong JWT/encryption secret, real model routing matched to available keys). Verify `get_settings()` degrades on missing optional keys.
-- [ ] 2. Dependencies: fresh `.venv`, `pip install -e ".[dev]"`. (running)
-- [ ] 3. Infra: `docker compose up -d postgres redis`; confirm both healthy.
-- [ ] 4. Migrations: autogenerate initial migration (no versions exist), `alembic upgrade head` on fresh DB, verify table list covers all existing models. Fix any model/migration drift.
-- [ ] 5. Wire routers into `apps/api/main.py`: `agents` (/api/v1/agents), `reviews` (/api/v1/reviews), `audit` (/api/v1/audit), plus `organizations` + `settings_routes` if trivially safe. Confirm each mounts and responds.
-- [ ] 6. Smoke the real extraction path: ingest a small real SEBI PDF, run `packages/ai/workflows/extraction.py` end-to-end with real keys, confirm ≥1 real `Obligation` row written with a citation.
-- [ ] 7. (Optional PoC) Wire a LangChain callback so the extraction call reports real token counts instead of hardcoded `prompt_tokens=1000`.
+Phase 0 (end-to-end wiring) is DONE — see git history. This phase adds real data + ground truth.
 
-### Risks / open questions
-- **API keys**: real extraction (step 6) needs at least one real LLM key. Route `fast` + `reasoning` to whatever provider(s) the user has. BLOCKER until provided.
-- Docker daemon must be running (launching now).
-- No migration versions exist → autogenerate initial. Watch for drift (enum types, pgvector columns, JSONB defaults, UUIDv7 server defaults).
-- `main.py` wires routers directly (ignores the already-complete `routes/__init__.py` aggregate). Keep minimal: add the 3–5 routers to main.py with matching prefixes, don't switch the whole mounting scheme (would move existing paths, risk breaking tests).
-- Extraction graph is sync (`llm.invoke`) inside LangGraph; must run it correctly from an async context (run in thread / use sync invoke).
-- A small real SEBI PDF is needed for step 6 — fetch a short circular or trim the master circular.
+## Steps
+- [ ] 1. Acquire Jun-2025 PDF from sebi.gov.in (Aug-2024 already present at data/corpus/).
+      Move/copy both to data/goldsets/circulars/ with canonical names. Record provenance
+      (URL, ref no., date, SHA-256, download date) in data/goldsets/PROVENANCE.md.
+- [ ] 2. Ingest BOTH through the real parser → clauses in DB. Confirm Aug-2024 ≥100 clauses.
+      Extract full text of both to working files for annotation + validation.
+- [ ] 3. Run extraction graph on Aug-2024 (bounded slice, rate-limit aware) → target ≥100
+      obligations. Report the REAL count honestly whatever it is.
+- [ ] 4. Build gold set: ~120–150 obligation annotations from REAL Aug-2024 clause text.
+      Composition: ~50% straightforward, ~25% conditional/exception, ~15% multi-actor/xref,
+      ~10% negative (definitions/informational). Tag difficulty easy/medium/hard.
+      Export data/goldsets/obligations.jsonl (conforms to goldset_schema.json).
+      AI-first-pass; mark UNVERIFIED pending human review (I am not a human verifier).
+- [ ] 5. Build labeled change-set: ≥20–30 real CREATED/MODIFIED/REMOVED changes confirmed
+      against BOTH PDFs (DDPI-replaces-PoA, QSB enhanced monitoring, tightened timeline, etc.)
+      + ~10 cosmetic renumberings labeled NOT_A_CHANGE. Export data/goldsets/changeset.jsonl.
+- [ ] 6. Validator: every obligation exact_quote must appear verbatim in Aug-2024 real text;
+      every change old_text in Aug-2024, new_text in Jun-2025. Fail loud on any miss.
+      This is the anti-fabrication guard.
+- [ ] 7. Loader packages/evaluation/datasets.py — idempotent load of both JSONL into
+      EvaluationDataset + EvaluationExample. Re-run = no duplicates.
+- [ ] 8. Provenance + honesty doc data/goldsets/README.md (size, composition, difficulty
+      breakdown, how built, verification status stated honestly).
 
-### Done criteria (exit gate)
-- [ ] `docker compose up` → postgres + redis healthy; `alembic upgrade head` applies cleanly on fresh DB.
-- [ ] `uvicorn apps.api.main:app` starts; `/api/v1/health` + `/api/v1/health/integrations` return 200; `agents`/`reviews`/`audit` reachable.
-- [ ] A real small PDF ingests and the real extraction graph writes ≥1 real `Obligation` row with a citation.
-- [ ] `python -c "import packages.ai.workflows.extraction"` and core packages import cleanly.
-- [ ] `py_compile`/mypy clean on touched files; existing tests still green.
-- [ ] Short written report.
+## Risks / open questions
+- Jun-2025 PDF: must find the real attachdocs URL behind the SEBI landing HTML page.
+- LLM quota: Gemini 2.5-flash free tier + Groq 30 RPM/1K RPD. Extraction on the full 419pp
+  is thousands of calls — infeasible + rate-limited. Run on a bounded obligation-dense slice
+  sufficient to clear ≥100 obligations; report real number, do not fabricate.
+- Human verification is MANDATORY per spec but I am an AI. I build a rigorous first pass
+  grounded in real quotes + a substring validator against the real PDF, and mark the set
+  UNVERIFIED-pending-human-review honestly. Will flag to user.
+- Parser clause reconstruction is heading-based; annotation spans should reference real text.
 
-### Review
+## Done criteria (exit gate)
+- [ ] Both real PDFs in data/goldsets/circulars/ with provenance incl. SHA-256.
+- [ ] Aug-2024 ingests ≥100 clauses; extraction graph produces ≥100 obligations on it.
+- [ ] obligations.jsonl validates vs schema, ~120–150 records incl. negatives + hard cases,
+      loaded into eval tables.
+- [ ] changeset.jsonl validates, includes ≥3 recognizable real changes + cosmetic non-changes.
+- [ ] Loader idempotent; eval tables show loaded counts.
+- [ ] README documents size/composition/verification honestly.
+- [ ] Written report with real numbers.
+
+## Review (Phase 1)
+
 **Done & verified:**
-- Deps installed in fresh `.venv` (`pip install -e ".[dev]"`). Added missing `email-validator`
-  (code uses `EmailStr`) and pinned `bcrypt>=4.0.1,<4.1` (passlib 1.7.4 incompatible with bcrypt 5.x).
-- `.env` created (Gemini routing, strong secrets). `get_settings()` degrades on missing optional keys — verified.
-- postgres + redis healthy via docker compose.
-- Initial migration autogenerated + applied on fresh DB → 42 tables. `alembic check` = no drift.
-- Wired routers in main.py: agents, reviews, audit, organizations, settings (+ fixed auth path to /api/v1/auth,
-  fixed documents/evidence bare-/api/v1 collision). 28 routes, no collisions. New routers return 401 (mounted+guarded).
-- Fixed drift: obligations.py & controls.py imported nonexistent `packages.regulatory_core.auth.rbac.Role`
-  and passed a list to varargs `require_role`; controls imported nonexistent `Evidence`.
-- Fixed drift: worker tasks imported nonexistent `async_session_maker` (added to database.py);
-  `DocumentStatus.EXTRACTING/EXTRACTED` don't exist (mapped to STRUCTURED/PROCESSED);
-  obligations delete set nonexistent `deleted_by` (now uses `soft_delete()`).
-- Extraction worker now persists citations (was dropping them) and uses the real reasoning model name.
-- Token PoC (step 7): extraction node now reports REAL token counts via UsageMetadataCallbackHandler
-  (was hardcoded prompt_tokens=1000). cost_usd left 0.0 (real pricing is Phase 4, not fabricated).
-- 8/8 tests green, repeatably (added NullPool test engine + auth-table cleanup in conftest).
+- Corpus: both real PDFs in `data/goldsets/circulars/` (Aug-2024 419pp sha a6a30dd4…,
+  Jun-2025 399pp sha 6ffd3e9f…). Jun-2025 downloaded from sebi.gov.in; both first pages
+  confirm ref numbers/dates; Jun explicitly supersedes Aug. Provenance in PROVENANCE.md.
+- Ingest: both ingested through the real parser → DB. Aug-2024 = **1,214 clauses** (≥100 ✓),
+  Jun-2025 = 702 clauses. Fixed a real parser bug (PyMuPDF lone surrogates rejected by
+  Postgres) — now stripped at parse time in parser.py.
+- Gold set: `data/goldsets/obligations.jsonl` = **123 records** (108 positive / 15 negative
+  = 12%), difficulty 29/72/22 easy/med/hard, tags conditional 33 · multi-actor 23 ·
+  cross-reference 19 · implicit-deadline 6 · definition 7. Validates vs goldset_schema.json
+  AND every exact_quote proven verbatim in the real Aug-2024 PDF.
+- Change-set: `data/goldsets/changeset.jsonl` = 19 records (6 CREATED · 1 MODIFIED · 12
+  NOT_A_CHANGE). old_text proven in Aug, new_text in Jun. Honest finding: the pair is mostly
+  a re-consolidation; DDPI-replaces-PoA and QSB "enhanced monitoring" PREDATE this pair
+  (present + identical in both) → recorded as NOT_A_CHANGE with notes, not fabricated.
+- Loader: `packages/evaluation/datasets.py` idempotent — DB shows 123 + 19 examples after
+  two loads (not doubled); example_count matches actual.
+- README.md documents size/composition/verification honestly (AI-first-pass, human
+  verification PENDING — I am not a human verifier; text is machine-proven, labels aren't).
+- Gates: py_compile + imports clean; new files ruff-clean under project config; jsonschema
+  added to dev deps.
 
-**Step 6 live smoke — PASSED:** ran `scripts/smoke_extraction.py` on a 3-page obligation-dense slice
-(pp.60-62) of the real Aug-2024 SEBI stockbroker master circular. Real extraction graph → **14 Obligation
-rows, 47 ObligationCitation rows**, ExtractionRun COMPLETED, 10,559 real tokens. First obligation:
-actor="Client", action="give specific authorization", 4 citations tied to exact source spans.
-Step 7 verified: obligation_extractor agent_runs show REAL varying token counts (e.g. 1302/1878, 786/761),
-not the old hardcoded 1000/300.
+**Extraction (≥100 obligations gate): PASSED — 106 obligations, 374 citations** on Aug-2024
+(120 cue-ranked clauses, 89,833 real tokens, 2 transient errors). ExtractionRun COMPLETED.
+  - Env caveat (NOT code): `.env` reasoning model `gemini-2.5-flash` now returns 404
+    (Google deprecated it for new keys); Groq's free 200K-tokens/day cap was exhausted by
+    the classification pass. Ran successfully by routing fast+reasoning to `gemini-flash-latest`
+    (the 10-key Gemini pool in .env gives 10x quota) via env override.
+  - ACTION FOR USER: update `.env` FAST_MODEL_NAME / REASONING_MODEL_NAME to
+    `gemini-flash-latest` (or attach Groq billing) before the Phase-4 eval + demo.
 
-**Gemini quota note (billing, not code):** the free-tier key has near-zero/exhausted quota on most models
-(gemini-3.6-flash = 20/day exhausted; gemini-2.0-flash = limit 0). `gemini-flash-lite-latest` had quota and
-is what `.env` is currently set to. For the Phase-4 eval + demo, attach billing or route reasoning to a
-stronger model (gemini-pro-latest / gemini-2.5-pro) — flash-lite is a stopgap that proves the path.
+**Not mine (pre-existing uncommitted):** .env.example, apps/api/config.py,
+packages/ai/providers.py were already modified at session start (Phase 0).
 
-**Deferred:**
-- mypy NOT fully clean on touched files: pre-existing strict-mypy debt across the codebase
-  (structured-output return types, StateGraph generics, untyped route handlers, celery stubs).
-  py_compile clean on all touched files. Not expanding scope to rewrite pre-existing typing.
+## No commits. Leave working tree dirty for review.

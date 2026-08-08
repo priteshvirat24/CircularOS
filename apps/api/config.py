@@ -24,6 +24,7 @@ class LLMProvider(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GEMINI = "gemini"
+    GROQ = "groq"
 
 
 class EmbeddingProvider(str, Enum):
@@ -82,6 +83,22 @@ class Settings(BaseSettings):
     gemini_api_key: Optional[str] = None
     gemini_model: str = "gemini-2.5-flash"
 
+    # Gemini key rotation: each key from a different GCP project multiplies
+    # free-tier RPD (250/day per project on 2.5 Flash). Fill as many as you have.
+    gemini_api_key_2: Optional[str] = None
+    gemini_api_key_3: Optional[str] = None
+    gemini_api_key_4: Optional[str] = None
+    gemini_api_key_5: Optional[str] = None
+    gemini_api_key_6: Optional[str] = None
+    gemini_api_key_7: Optional[str] = None
+    gemini_api_key_8: Optional[str] = None
+    gemini_api_key_9: Optional[str] = None
+    gemini_api_key_10: Optional[str] = None
+
+    # Groq: free tier, no credit card, OpenAI-compatible endpoint.
+    # Different model family from Gemini = genuine second opinion for critic.
+    groq_api_key: Optional[str] = None
+
     # ── Model Routing ────────────────────────────
     fast_model_provider: Optional[str] = None
     fast_model_name: Optional[str] = None
@@ -131,8 +148,25 @@ class Settings(BaseSettings):
     # ── Worker ───────────────────────────────────
     worker_concurrency: int = 4
 
+    @property
+    def gemini_key_count(self) -> int:
+        """Number of Gemini keys configured (for logging/diagnostics)."""
+        count = 1 if self.gemini_api_key else 0
+        for i in range(2, 11):
+            if getattr(self, f"gemini_api_key_{i}", None):
+                count += 1
+        return count
+
     def get_integration_status(self) -> dict[str, dict[str, bool | str]]:
         """Report which integrations are configured vs unconfigured."""
+        gemini_configured = bool(self.gemini_api_key)
+        gemini_status = (
+            f"configured ({self.gemini_key_count} key{'s' if self.gemini_key_count != 1 else ''} "
+            f"in rotation pool)"
+            if gemini_configured
+            else "unconfigured - set GEMINI_API_KEY"
+        )
+
         return {
             "database": {
                 "configured": bool(self.database_url),
@@ -151,8 +185,12 @@ class Settings(BaseSettings):
                 "status": "configured" if self.anthropic_api_key else "unconfigured - set ANTHROPIC_API_KEY",
             },
             "gemini": {
-                "configured": bool(self.gemini_api_key),
-                "status": "configured" if self.gemini_api_key else "unconfigured - set GEMINI_API_KEY",
+                "configured": gemini_configured,
+                "status": gemini_status,
+            },
+            "groq": {
+                "configured": bool(self.groq_api_key),
+                "status": "configured" if self.groq_api_key else "unconfigured - set GROQ_API_KEY",
             },
             "embedding": {
                 "configured": bool(self.embedding_provider and self.embedding_model),
