@@ -29,6 +29,7 @@ from apps.api.routes import (
     audit,
     auth,
     controls,
+    diff,
     documents,
     evidence,
     health,
@@ -162,6 +163,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(organizations.router, prefix="/api/v1/organizations", tags=["organizations"])
     app.include_router(documents.router, prefix="/api/v1/documents", tags=["documents"])
+    app.include_router(diff.router, prefix="/api/v1/diff", tags=["diff"])
     app.include_router(obligations.router, prefix="/api/v1", tags=["obligations"])
     app.include_router(controls.router, prefix="/api/v1", tags=["controls"])
     app.include_router(reviews.router, prefix="/api/v1/reviews", tags=["reviews"])

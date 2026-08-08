@@ -59,6 +59,22 @@ class ChangeType(str, enum.Enum):
     EXCEPTION_CHANGED = "exception_changed"
 
 
+class MaterialityLevel(str, enum.Enum):
+    """Deterministic materiality verdict from the Policy Decision Engine."""
+
+    NONE = "none"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class DiffRunStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class Obligation(Base, TimestampMixin, SoftDeleteMixin, VersionMixin, AuditMixin):
     """Structured regulatory obligation extracted from a clause."""
 
@@ -315,11 +331,60 @@ class RegulatoryChange(Base, TimestampMixin, AuditMixin):
         UUID(as_uuid=True), nullable=True
     )
 
+    # ── Phase-2 diff-engine fields ──────────────────────────────────────────
+    diff_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("diff_runs.id"), nullable=True
+    )
+    changed_fields: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    similarity_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    materiality: Mapped[Optional[MaterialityLevel]] = mapped_column(
+        Enum(MaterialityLevel), nullable=True
+    )
+    materiality_reasons: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    requires_confirmation: Mapped[bool] = mapped_column(Boolean, default=False)
+
     __table_args__ = (
         Index("ix_change_old_doc", "old_document_id"),
         Index("ix_change_new_doc", "new_document_id"),
         Index("ix_change_type", "change_type"),
         Index("ix_change_review", "review_status"),
+        Index("ix_change_diff_run", "diff_run_id"),
+        Index("ix_change_materiality", "materiality"),
+    )
+
+
+class DiffRun(Base, TimestampMixin, AuditMixin):
+    """One execution of the diff engine over a pair of documents; groups its change rows."""
+
+    __tablename__ = "diff_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=generate_uuid7
+    )
+    old_document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("regulatory_documents.id"), nullable=False
+    )
+    new_document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("regulatory_documents.id"), nullable=False
+    )
+    status: Mapped[DiffRunStatus] = mapped_column(
+        Enum(DiffRunStatus), nullable=False, default=DiffRunStatus.PENDING
+    )
+    summary: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    matcher_config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    notes: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index("ix_diffrun_old_doc", "old_document_id"),
+        Index("ix_diffrun_new_doc", "new_document_id"),
+        Index("ix_diffrun_status", "status"),
     )
 
 
