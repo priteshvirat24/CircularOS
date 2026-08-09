@@ -1,3 +1,101 @@
+# Task: Phase 5.5 — Tenant A Control/Evidence Layer
+
+## Goal
+Populate the real 45-obligation Tenant A registry with a compact, deterministic control
+catalogue, rule-derived mappings, reference-only evidence with computed freshness, and real
+partial latest-circular adoption—without changing the SupTech aggregation rules.
+
+## Plan
+- [x] Baseline the Phase-5 dirty worktree and post-seed dev counts; profile all 45 real
+      obligations and the existing real §17 system-audit control/change relationship.
+- [x] Build `scripts/build_tenant_a_controls.py` with an explicit honesty ledger, a pure
+      15-control catalogue, first-match deterministic mapping rules, frequency windows, and
+      reference-only evidence planning.
+- [x] Persist catalogue metadata (owner role/frequency/rule provenance), 33/45 rule-derived
+      mappings, and evidence whose VALID/STALE verdict and `valid_until` are computed from
+      collection date + frequency; leave one mapped obligation missing evidence.
+- [x] Derive latest-circular adoption from change/control topic correspondence: complete §17,
+      keep §71/§72/§88 blocked, and never touch B/C seeded data.
+- [x] Add pure known-answer tests plus isolated-DB idempotency/integration/API/privacy tests;
+      update the Phase-5 final-shape expectations for Tenant A while preserving B/C.
+- [x] Run the builder twice on the isolated DB and then the dev DB; report exact inserted-row
+      deltas, control catalogue examples, control-mapped obligations, coverage, freshness,
+      gap IDs/text, and circular adoption.
+- [x] Run imports, `py_compile`, Ruff/format, mypy, focused tests, full pytest, live APIs, and
+      verify `packages/suptech/aggregation.py` is byte-identical to the Phase-5 baseline.
+- [x] Self-review status/diff and leave all work unstaged and uncommitted.
+
+## Risks and invariants
+- The actual 45-row registry includes obligations addressed to brokers, exchanges, and
+  depositories. Rules map operational controls to the obligation content and exchange-interface
+  evidence, with owner/applicability provenance visible; they do not pretend every row is a
+  direct broker duty.
+- Control mapping is 33/45 (73.33%), but SupTech coverage is lower because adequate evidence is
+  required too: target 28/45 (62.22%), with four stale and one mapped-but-missing artifact.
+- Evidence artifacts are references only (`reference://`), explicitly labelled
+  constructed-plausible; no file or extracted facts are fabricated.
+- Freshness is a pure date calculation from collection date + a catalogue frequency window.
+  Status is never hand-set independently of those dates.
+- Existing Phase-3 §17 control and Phase-5 B/C rows are preserved. No LLM/network calls, no
+  aggregation changes, no Git state/history mutation.
+
+## Done criteria
+- [x] 12–18 catalogue controls exist and each maps to at least one real obligation by rule.
+- [x] Builder second run inserts zero rows; mapping/evidence/adoption plans are deterministic.
+- [x] Tenant A live posture is 60–75% with valid/stale/missing evidence and non-empty true gaps.
+- [x] Tenant A adopts §17 but not §71/§72; B/C retain their prior seeded posture and flags.
+- [x] Privacy tests remain green and supervisory payloads remain aggregate-only.
+- [x] Ruff/mypy/full pytest and live API gates pass; intended dev deltas are reported exactly.
+
+## Review (Phase 5.5)
+
+**Catalogue and mapping:** built 15 constructed-plausible controls over the real 45-obligation
+registry. Each control records owner role, frequency, window, and its exact first-match rule.
+The rules map 33/45 obligations (73.33%) without typed obligation IDs. Examples: quarterly bank
+and demat nomenclature reconciliation (4 obligations), daily client-fund misuse surveillance
+(3), exchange-information submission SLA (3), fit-and-proper screening (3), and half-yearly
+internal-audit execution/reporting (4 across two controls). The existing Phase-3 §17 system-audit
+control remains separate, so Tenant A has 16 active real/constructed-plausible controls total.
+
+**Evidence and coverage:** 14 reference-only artifacts (`reference://`, no file content claimed)
+support 32 mapped obligations; the registration dossier is deliberately mapped but missing its
+artifact. At as-of 2026-08-09, collection date + recurrence window produces 28 VALID, 4 STALE,
+and 13 MISSING obligation states. The stale quarterly account register was collected 2026-03-24
+and expired 2026-06-24; monthly July registers expire 2026-09-01; half-yearly audit packs expire
+2026-12-24. SupTech therefore reports Tenant A at 28/45 = **62.22%**, with **17 gaps** (7 HIGH,
+9 MEDIUM, 1 LOW), not a chosen percentage.
+
+**Actual Tenant A gap list:** one mapped registration-dossier obligation lacks evidence; four
+mapped bank/demat nomenclature obligations have stale evidence. Twelve obligations have no
+catalogue match: corporate-member trading activation; commodity-derivatives membership
+eligibility; commodity minimum net worth; cash-segment CM/PCM tie-up; SEBI Intermediary Portal
+filing; physical declarations/undertakings; depository nomenclature immutability; two triennial
+internal-auditor inspection-planning duties; direct auditor-to-exchange reporting; inspection-
+deficiency corrective-step monitoring; and stock-broker financial-ratio monitoring. These are
+live gaps on real obligation IDs, not generated gap rows.
+
+**Latest circular:** the real §17 change matches the active system-audit control and is completed;
+§71 GIFT-IFSC, §72 NDS-OM, and §88 association restrictions have no matching active control and
+remain blocked. Tenant A is therefore 1/4 = **25%** adopted. Live market adoption is now 100%
+for §17 and 33.33% for each of §71/§72/§88. B remains seeded at 88.89% coverage/100% adoption;
+C remains seeded at 22.22%/25%, both still flagged.
+
+**Idempotency, privacy, and gates:** the first dev build added exactly 15 controls, 33 control
+mappings, 14 evidence references, 32 evidence mappings, and 4 adoption tasks; the second added
+`{}`. Dev counts moved only from `(4 orgs, 3 controls, 65 evidence, 76 control mappings, 65
+evidence mappings, 8 tasks)` to `(4, 18, 79, 109, 97, 12)` and stayed identical across the full
+test suite. Raw document/control calls still return 403 and aggregate-only recursive assertions
+pass. Focused 14/14 and full 117/117 pytest tests pass; imports, `py_compile`, Ruff/format, and
+mypy pass. `packages/suptech/aggregation.py` retained SHA-256
+`665181abe5a4330ebe00ca66ce1c159a0fbb964b8baf25704e6ba8f4da24a657`; no aggregation change,
+LLM, provider, or network path was introduced.
+
+**Next:** the registry/control/evidence data shape is frozen for Phase 4.5's paid full-corpus
+extraction, verification, evaluation, and calibration run. Phase 6 then wires the final live
+RegTech and SupTech contracts into the frontend.
+
+---
+
 # Task: Phase 5 — SupTech Supervisory Mirror
 
 ## Goal

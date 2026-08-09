@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
+from datetime import date
 
 import pytest
 from sqlalchemy import func, select
@@ -29,6 +30,7 @@ from packages.regulatory_core.models.obligations import (
     RegulatoryChange,
     RiskLevel,
 )
+from scripts.build_tenant_a_controls import CONTROL_CATALOG, build_tenant_a_layer
 from scripts.seed_suptech import seed_suptech
 
 
@@ -96,13 +98,20 @@ async def _prepare_suptech_fixture() -> SupTechFixture:
         )
         db.add(clause)
         await db.flush()
-        for index in range(45):
+        obligation_texts: list[str] = []
+        expected_counts = (3, 3, 1, 1, 1, 2, 1, 4, 2, 2, 3, 3, 3, 2, 2)
+        for spec, count in zip(CONTROL_CATALOG, expected_counts, strict=True):
+            for index in range(count):
+                obligation_texts.append(f"{spec.match_any[index % len(spec.match_any)]} fixture")
+        obligation_texts.extend(f"unmapped real fixture duty {index}" for index in range(12))
+        assert len(obligation_texts) == 45
+        for index, obligation_text in enumerate(obligation_texts):
             db.add(
                 Obligation(
                     document_id=registry.id,
                     clause_id=clause.id,
                     source_text=clause.text_content,
-                    normalized_obligation=f"Real fixture obligation {index + 1}",
+                    normalized_obligation=obligation_text,
                     risk_level=RiskLevel.HIGH if index < 5 else RiskLevel.MEDIUM,
                 )
             )
@@ -127,7 +136,11 @@ async def _prepare_suptech_fixture() -> SupTechFixture:
                     else MaterialityLevel.MEDIUM,
                     diff_details={
                         "new_ref": reference,
-                        "obligation": f"Public circular gap type {reference}",
+                        "obligation": (
+                            "Framework for Monitoring and Supervision of System Audit"
+                            if reference == "§17"
+                            else f"Public circular gap type {reference}"
+                        ),
                     },
                 )
             )
@@ -144,9 +157,13 @@ async def _prepare_suptech_fixture() -> SupTechFixture:
         )
         private_control = Control(
             organization_id=real.id,
-            name="private-control",
+            name="System-audit monitoring and supervision control",
             description="PRIVATE CONTROL DESCRIPTION",
             status="active",
+            metadata_json={
+                "source": "phase3_real_change_seed",
+                "source_topic": "Framework for Monitoring and Supervision of System Audit",
+            },
         )
         db.add(private_control)
         await db.flush()
@@ -176,6 +193,19 @@ async def _prepare_suptech_fixture() -> SupTechFixture:
         assert first.tracked_changes == 4
         assert second.created == {}
         assert before_second == after_second
+
+        first_layer = await build_tenant_a_layer(db, as_of=date(2026, 8, 9), tenant_id=real.id)
+        await db.commit()
+        second_layer = await build_tenant_a_layer(db, as_of=date(2026, 8, 9), tenant_id=real.id)
+        await db.commit()
+        assert first_layer.catalogue_controls == 15
+        assert first_layer.mapped_obligations == 33
+        assert first_layer.evidence_valid == 28
+        assert first_layer.evidence_stale == 4
+        assert first_layer.evidence_missing == 13
+        assert first_layer.adopted_references == ("§17",)
+        assert set(first_layer.blocked_references) == {"§71", "§72", "§88"}
+        assert second_layer.created == {}
 
         viewer = (
             await db.execute(
@@ -238,7 +268,13 @@ def test_posture_is_live_labelled_and_aggregate_only(
     assert payload["market_rollup"]["seeded_intermediaries"] == 2
     by_name = {item["name"]: item for item in payload["intermediaries"]}
     assert by_name["Tenant A — Real Registry"]["seeded"] is False
-    assert by_name["Tenant A — Real Registry"]["coverage"]["percentage"] == 0.0
+    assert by_name["Tenant A — Real Registry"]["coverage"]["percentage"] == 62.22
+    assert by_name["Tenant A — Real Registry"]["evidence_freshness"] == {
+        "valid": 28,
+        "stale": 4,
+        "missing": 13,
+    }
+    assert by_name["Tenant A — Real Registry"]["open_gaps"]["total"] == 17
     assert by_name["Tenant B — Well Implemented (Seeded)"]["coverage"]["percentage"] == 88.89
     assert by_name["Tenant C — Laggard (Seeded)"]["coverage"]["percentage"] == 22.22
     _assert_aggregate_only(payload)
@@ -256,7 +292,7 @@ def test_adoption_uses_four_real_material_change_rows(
     assert {item["reference"] for item in payload["changes"]} == {"§17", "§71", "§72", "§88"}
     assert all(item["reference"] != "§32" for item in payload["changes"])
     by_name = {item["name"]: item for item in payload["intermediaries"]}
-    assert by_name["Tenant A — Real Registry"]["adoption_percentage"] == 0.0
+    assert by_name["Tenant A — Real Registry"]["adoption_percentage"] == 25.0
     assert by_name["Tenant B — Well Implemented (Seeded)"]["adoption_percentage"] == 100.0
     assert by_name["Tenant C — Laggard (Seeded)"]["adoption_percentage"] == 25.0
     _assert_aggregate_only(payload)
