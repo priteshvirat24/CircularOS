@@ -1,0 +1,46 @@
+{
+  "calibration": {
+    "intercept": 7.741164263078807e-06,
+    "method": "platt",
+    "slope": 0.0
+  },
+  "feature_names": [
+    "citation_score",
+    "entailment",
+    "critic_objection",
+    "self_confidence",
+    "difficulty"
+  ],
+  "fit": {
+    "calibration_size": 2,
+    "method": "regularized-logistic-mle",
+    "train_size": 6
+  },
+  "honesty": "PROVISIONAL partial-corpus fit; keep phase3 defaults active until the Phase 4.5 full-corpus refit",
+  "metrics": {
+    "brier": 0.25000000000374534,
+    "ece": 1.9352910657355338e-06,
+    "reliability_diagram": [
+      {
+        "bin_lower": 0.5,
+        "bin_upper": 0.6,
+        "count": 2,
+        "empirical_accuracy": 0.5,
+        "mean_confidence": 0.5000019352910657
+      }
+    ]
+  },
+  "params": {
+    "citation_score_weight": -0.0,
+    "critic_objection_weight": -0.0,
+    "difficulty_weight": -0.0,
+    "entailment_weight": 0.0,
+    "high_threshold": 0.8,
+    "intercept": 7.741164263078807e-06,
+    "medium_threshold": 0.55,
+    "self_confidence_weight": -0.0,
+    "version": "phase4-partial-provisional-v1"
+  },
+  "status": "PROVISIONAL",
+  "version": "phase4-partial-provisional-v1"
+}

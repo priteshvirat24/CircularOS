@@ -13,12 +13,16 @@ import time
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from langchain_core.callbacks import UsageMetadataCallbackHandler
+
 from packages.ai.prompts import get_prompt
 from packages.ai.providers import get_structured_llm
 from packages.ai.schemas import CriticAssessment, EntailmentAssessment
+from packages.evaluation.calibration import load_confidence_params
 from packages.policy_engine.citations import CitationVerdict, verify_citation
 from packages.policy_engine.confidence import (
     ConfidenceBand,
+    ConfidenceParams,
     ConfidenceVerdict,
     ExtractionSignals,
     aggregate_confidence,
@@ -77,6 +81,22 @@ class CitationCheck:
 
 
 @dataclass(frozen=True)
+class InvocationUsage:
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cost_usd: float = 0.0
+
+    @property
+    def total_tokens(self) -> int | None:
+        if self.prompt_tokens is None or self.completion_tokens is None:
+            return None
+        return self.prompt_tokens + self.completion_tokens
+
+
+EMPTY_INVOCATION_USAGE = InvocationUsage()
+
+
+@dataclass(frozen=True)
 class VerificationOutcome:
     obligation_id: str
     citation_checks: tuple[CitationCheck, ...]
@@ -86,12 +106,18 @@ class VerificationOutcome:
     confidence: ConfidenceVerdict
     route: VerificationRoute
     ordered_nodes: tuple[str, ...]
+    entailment_usage: InvocationUsage
+    critic_usage: InvocationUsage
 
 
 def citation_span_node(candidate: VerificationCandidate) -> tuple[CitationCheck, ...]:
     """Deterministically verify every claimed citation span."""
     return tuple(
-        CitationCheck(citation.field_name, citation.quote, verify_citation(citation.quote, candidate.source_text))
+        CitationCheck(
+            citation.field_name,
+            citation.quote,
+            verify_citation(citation.quote, candidate.source_text),
+        )
         for citation in candidate.citations
     )
 
@@ -118,8 +144,9 @@ def confidence_aggregation_node(
     citation_checks: tuple[CitationCheck, ...],
     entailment_signal: Literal["entailment", "neutral", "contradiction"],
     critic: CriticAssessment,
+    params: ConfidenceParams | None = None,
 ) -> ConfidenceVerdict:
-    """Aggregate visible signals using fixed Phase-3 parameters."""
+    """Aggregate visible signals using explicitly loaded or default parameters."""
     all_valid = bool(citation_checks) and all(check.verdict.valid for check in citation_checks)
     minimum = min((check.verdict.score for check in citation_checks), default=0.0)
     return aggregate_confidence(
@@ -130,7 +157,8 @@ def confidence_aggregation_node(
             critic_has_objection=critic.has_substantive_objection,
             model_self_confidence=candidate.model_self_confidence,
             difficulty=candidate.difficulty,
-        )
+        ),
+        params=params or load_confidence_params().params,
     )
 
 
@@ -153,13 +181,17 @@ def verify_with_assessments(
     candidate: VerificationCandidate,
     entailment: EntailmentAssessment,
     critic: CriticAssessment,
+    *,
+    params: ConfidenceParams | None = None,
+    entailment_usage: InvocationUsage = EMPTY_INVOCATION_USAGE,
+    critic_usage: InvocationUsage = EMPTY_INVOCATION_USAGE,
 ) -> VerificationOutcome:
     """Run the four verification nodes in their fixed order."""
     citations = citation_span_node(candidate)
     entailment_signal = entailment_gate_node(candidate, entailment)
     critic_signal = adversarial_critic_node(candidate, critic)
     confidence = confidence_aggregation_node(
-        candidate, citations, entailment_signal, critic_signal
+        candidate, citations, entailment_signal, critic_signal, params
     )
     route = route_verification(citations, entailment_signal, confidence)
     return VerificationOutcome(
@@ -171,6 +203,8 @@ def verify_with_assessments(
         confidence,
         route,
         ("citation_span_match", "entailment_gate", "adversarial_critic", "confidence_aggregation"),
+        entailment_usage,
+        critic_usage,
     )
 
 
@@ -179,6 +213,7 @@ def run_verification(candidate: VerificationCandidate) -> VerificationOutcome:
     payload = json.dumps(candidate.key_fields(), ensure_ascii=False, sort_keys=True)
     entailment_prompt = get_prompt("entailment_checker")
     entailment_llm = get_structured_llm(EntailmentAssessment, routing_type="critic")
+    entailment_callback = UsageMetadataCallbackHandler()
     entailment = cast(
         EntailmentAssessment,
         _invoke_with_free_tier_backoff(
@@ -186,10 +221,12 @@ def run_verification(candidate: VerificationCandidate) -> VerificationOutcome:
             entailment_prompt.format_messages(
                 source_text=candidate.source_text, candidate_json=payload
             ),
+            entailment_callback,
         ),
     )
     critic_prompt = get_prompt("regulatory_critic")
     critic_llm = get_structured_llm(CriticAssessment, routing_type="critic")
+    critic_callback = UsageMetadataCallbackHandler()
     critic = cast(
         CriticAssessment,
         _invoke_with_free_tier_backoff(
@@ -197,22 +234,43 @@ def run_verification(candidate: VerificationCandidate) -> VerificationOutcome:
             critic_prompt.format_messages(
                 source_text=candidate.source_text, candidate_json=payload
             ),
+            critic_callback,
         ),
     )
-    return verify_with_assessments(candidate, entailment, critic)
+    return verify_with_assessments(
+        candidate,
+        entailment,
+        critic,
+        params=load_confidence_params().params,
+        entailment_usage=_usage(entailment_callback),
+        critic_usage=_usage(critic_callback),
+    )
 
 
-def _invoke_with_free_tier_backoff(llm: Any, messages: Any) -> Any:
+def _invoke_with_free_tier_backoff(
+    llm: Any, messages: Any, usage_callback: UsageMetadataCallbackHandler
+) -> Any:
     """Honor Groq's explicit retry window without falling back to a paid provider."""
     for attempt in range(1, 7):
         try:
-            return llm.invoke(messages)
+            return llm.invoke(messages, config={"callbacks": [usage_callback]})
         except Exception as exc:
             match = _RETRY_AFTER.search(str(exc))
             if match is None or attempt == 6:
                 raise
             time.sleep(float(match.group(1)) + 1.0)
     raise RuntimeError("free-tier retry loop exhausted")
+
+
+def _usage(callback: UsageMetadataCallbackHandler) -> InvocationUsage:
+    values = list(getattr(callback, "usage_metadata", {}).values())
+    if not values:
+        return InvocationUsage()
+    return InvocationUsage(
+        prompt_tokens=sum(int(value.get("input_tokens", 0)) for value in values),
+        completion_tokens=sum(int(value.get("output_tokens", 0)) for value in values),
+        cost_usd=0.0,
+    )
 
 
 def outcome_as_dict(outcome: VerificationOutcome) -> dict[str, Any]:
@@ -243,4 +301,18 @@ def outcome_as_dict(outcome: VerificationOutcome) -> dict[str, Any]:
             "params_version": outcome.confidence.params_version,
         },
         "route": outcome.route.value,
+        "usage": {
+            "entailment": {
+                "prompt_tokens": outcome.entailment_usage.prompt_tokens,
+                "completion_tokens": outcome.entailment_usage.completion_tokens,
+                "total_tokens": outcome.entailment_usage.total_tokens,
+                "cost_usd": outcome.entailment_usage.cost_usd,
+            },
+            "critic": {
+                "prompt_tokens": outcome.critic_usage.prompt_tokens,
+                "completion_tokens": outcome.critic_usage.completion_tokens,
+                "total_tokens": outcome.critic_usage.total_tokens,
+                "cost_usd": outcome.critic_usage.cost_usd,
+            },
+        },
     }

@@ -1,1 +1,1 @@
-"""Evaluation package: gold-set loading and (later phases) the eval runner."""
+"""Deterministic evaluation, calibration, uncertainty, and persisted runners."""

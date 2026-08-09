@@ -1,3 +1,109 @@
+# Task: Phase 4 — Eval Harness (code-complete; headline numbers deferred to 4.5)
+
+## Goal
+Build the extraction/diff evaluation, deterministic matching and uncertainty, provisional
+confidence fitting/calibration, real usage accounting, persistence, and read API. Prove the
+same code paths on fixtures and the available partial corpus without spending quota or
+presenting partial/provisional results as final.
+
+## Plan
+- [x] Baseline the dirty worktree, goldset/data shape, evaluation schema, pipeline entry
+      points, and dev-DB counts; preserve all user-owned changes.
+- [x] Add pure `metrics.py`, `matching.py`, and `uncertainty.py` with known-answer and edge-case
+      tests (including 2 TP / 1 FP / 1 FN and B=1000 bootstrap intervals).
+- [x] Add `calibration.py`: logistic MLE, held-out Platt/isotonic calibration, ECE/Brier,
+      reliability data, and PROVISIONAL artifact export; add a pure confidence-param loader
+      that falls back to Phase-3 defaults and never labels them calibrated.
+- [x] Add the DB-backed extraction runner as a vertical slice: score the real stored partial
+      Aug corpus against linked gold examples, persist aggregate/per-example results, field and
+      difficulty breakdowns, bootstrap CI, matcher config, coverage, single-annotator note,
+      usage totals, and at least two named failures.
+- [x] Add the DB-backed diff runner over the real Aug→Jun documents and `changeset.jsonl`,
+      persisting the final section-granularity detection and false-positive metrics.
+- [x] Add `GET /api/v1/evaluation/runs/{id}` and API tests for metrics, confusion,
+      breakdowns, failures, costs, matcher config, and corpus coverage.
+- [x] Remove remaining simulated token/cost literals from active extraction, verification,
+      and diff paths; record provider callback/response usage when available and honest zero/
+      unavailable values otherwise.
+- [x] Run the partial extraction evaluation, provisional calibration proof, and final diff
+      evaluation without new paid model calls; record actual results only.
+- [x] Update the Phase 4.5 batch: code already built/tested; full corpus only for extraction
+      eval, calibration refit, and final citation-verification rate.
+- [x] Self-review for hardcoded eval-surface metrics and policy-engine I/O; run import, ruff,
+      mypy, full pytest on isolated test DB, API smoke test, and prove dev counts unchanged.
+
+## Risks and invariants
+- Extraction P/R/F1, field/difficulty metrics, confidence parameters, ECE/Brier, and named
+  failures are PARTIAL/PROVISIONAL until the Phase 4.5 full-corpus batch.
+- Diff results are final only at the 19-record section-level labeled changeset granularity.
+- The corpus is single-annotator; do not implement or report Cohen's kappa.
+- No new paid/quota-blocking LLM calls in this phase; reuse stored real extraction and
+  verification outputs. No hardcoded or estimated metrics.
+- `packages/policy_engine/` remains pure. The loader accepts an explicit artifact path at the
+  application boundary and falls back to `phase3-default-unfitted` defaults.
+- No Git staging, commits, pushes, or history/state mutation.
+
+## Done criteria
+- [x] Pure metric, matcher, bootstrap, and calibration tests pass against known answers.
+- [x] Partial extraction run persists real confusion/P/R/F1, field/difficulty breakdowns,
+      matcher config, coverage marker, usage totals, and >=2 named failures.
+- [x] Diff run persists final labeled-change detection and cosmetic-FP rates.
+- [x] Provisional params export and explicit load/fallback paths are tested end-to-end.
+- [x] Evaluation API returns the persisted contract including corpus coverage.
+- [x] Phase 4.5 handoff explicitly needs full corpus only, with no new evaluation code.
+- [x] Ruff/mypy/full pytest pass; dev DB counts are unchanged; no hardcoded headline literals.
+
+## Review (Phase 4)
+
+**Final diff benchmark at the labeled granularity:** evaluation run
+`019fe4b1-c038-731f-a298-b84ea9a7a900` ran the deterministic real Aug-2024→Jun-2025
+pipeline over all 19 section-level labels. It detected **7/7 substantive changes**
+(6/6 CREATED, 1/1 MODIFIED), missed 0, and produced **0/12 cosmetic false positives**:
+detection rate **1.0**, false-positive rate **0.0**. These are FINAL only at the labeled
+top-level-section granularity.
+
+**Extraction benchmark (PARTIAL, not a headline):** evaluation run
+`019fe4b8-4c2d-771d-95c7-6ba8ec6b5ac8` reused the 45 real stored August predictions without
+new model calls. The partial registry's source clauses cover **5/123 annotated examples**
+(4 positive obligations); **8/45 predictions** cite those annotated spans. On that small covered
+slice the matcher produced 2 TP / 6 FP / 2 FN: precision **0.25**, recall **0.50**, F1
+**0.3333333333333333**, bootstrap 95% CI **[0.0, 0.7272727272727272]** (B=1000,
+gold-example resampling). All persisted surfaces say PARTIAL and
+`pending full-corpus run (Phase 4.5)`.
+
+**Depth and failures:** matched-pair field accuracy is actor 1.0, action 1.0, deadline 1.0,
+frequency 0.0, evidence 1.0. Difficulty accuracy on the five covered examples is easy 1/2,
+medium 1/1, hard 0/2. Named failures include the missed conditional change-in-control duty
+(`obl-0122`, predicted actor alignment 0.226 below threshold) and the missed portal-only filing
+duty (`obl-0079`, actor alignment 0.240 below threshold), plus concrete unmatched predictions.
+
+**Calibration and confidence activation:** logistic MLE → Platt (and tested isotonic PAV), ECE,
+Brier, and reliability data run end-to-end. The partial artifact has status **PROVISIONAL**;
+its calibration split is only 2 examples, with provisional ECE **0.0000019352910657355338**
+and Brier **0.25000000000374534**, so these are proof-of-code values, not performance claims.
+The loader demonstrably refuses PROVISIONAL status and keeps
+`phase3-default-unfitted`; Phase 4.5 can overwrite the same artifact with CALIBRATED params.
+
+**Usage honesty:** the run persists **35,472 provider-reported extraction tokens** and **$0.00**
+cost. This is explicitly marked an incomplete lower bound because the earlier Phase-3 Groq
+verification run stored 90 invocations without token metadata. New extraction classification,
+extraction, entailment, and critic calls now use real LangChain usage callbacks and persist
+reported prompt/completion totals; missing provider metadata remains NULL, never simulated.
+
+**API and gates:** `GET /api/v1/evaluation/runs/{id}` returned HTTP 200 with headline status,
+confusion, matcher config, field/difficulty breakdowns, failures, coverage, calibration, and
+usage. Ground truth is explicitly single-annotator; no Cohen's kappa machinery was built.
+All **103 pytest tests pass** on `circularos_test`. Dev counts were identical before/after:
+documents 2, clauses 1,916, obligations 102, diff runs 4, changes 21, evaluation datasets 2,
+examples 142, runs 6, results 530. Ruff and mypy are clean on touched source files (apart from
+the accepted FastAPI `Depends()` B008 idiom). No Git staging/history mutation was performed.
+
+**Phase 4.5:** evaluation code is built and tested. The one paid batch only publishes the full
+corpus, runs full verification, calls this extraction runner, and refits/activates calibration;
+no new evaluation implementation is required.
+
+---
+
 # Task: Phase 3 — Verification Loop + Policy Decision Engine
 
 ## Goal
@@ -60,12 +166,15 @@ and deterministic blast-radius persistence on the existing partial corpus and re
 ## Phase 4.5 — Full-Corpus Eval Run (paid, one shot)
 - [ ] Resume `scripts/extract_obligations_full.py` and complete/publish both circulars.
 - [ ] Run verification across the full published corpus and report the final citation-
-      verification rate (replace the Phase-3 partial-only label).
+      verification rate (code built and tested; needs full corpus only; replace the Phase-3
+      partial-only label).
 - [ ] Re-run the full-coverage diff gold gate: 6/6 CREATED, 1/1 MODIFIED, 0/12 cosmetic FP;
       reconcile honestly without weakening the 0.8 coverage or created/removed guards.
-- [ ] Run Phase-4 extraction P/R/F1 evaluation on the full gold set.
+- [ ] Run Phase-4 extraction P/R/F1 evaluation on the full gold set (runner built and tested;
+      needs full corpus only).
 - [ ] Fit and calibrate the logistic confidence parameters; export
-      `data/goldsets/confidence_params.json` and report calibration metrics.
+      `data/goldsets/confidence_params.json` and report calibration metrics (fit/calibration/
+      activation path built and tested; needs full corpus only).
 - [ ] Execute this as one paid batch near submission, before demo/video capture; until then
       every full-corpus metric surface must say `pending full-corpus run`.
 

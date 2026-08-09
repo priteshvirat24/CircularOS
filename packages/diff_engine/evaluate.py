@@ -30,8 +30,9 @@ def _ref_number(ref: str | None) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def evaluate_against_changeset(result: DiffResult, gold: list[dict],
-                               new_full_text: str = "") -> dict:
+def evaluate_against_changeset(
+    result: DiffResult, gold: list[dict], new_full_text: str = ""
+) -> dict:
     """Return a metrics dict comparing detected changes to the gold change-set.
 
     ``new_full_text`` (the Jun document text) lets CREATED detection confirm a gold item's
@@ -54,9 +55,7 @@ def evaluate_against_changeset(result: DiffResult, gold: list[dict],
 
     # A CREATED gold row is detected if its new_text appears in a detected CREATED section's
     # body/title, or its section number was flagged CREATED.
-    created_bodies = [
-        _norm(c.obligation) + " " + _norm(c.new_text) for c in detected_created
-    ]
+    created_bodies = [_norm(c.obligation) + " " + _norm(c.new_text) for c in detected_created]
     new_ft = _norm(new_full_text)
 
     for row in gold:
@@ -76,11 +75,13 @@ def evaluate_against_changeset(result: DiffResult, gold: list[dict],
                 for c in detected_created:
                     span = c.citations.get("new", {}).get("span")
                     if span and span[0] is not None and span[1] is not None:
-                        seg = _norm(new_full_text[span[0]:span[1]])
+                        seg = _norm(new_full_text[span[0] : span[1]])
                         if new_text in seg:
                             by_fulltext = True
                             break
-            (created_hits if (by_num or by_text or by_fulltext) else created_misses).append(row["id"])
+            (created_hits if (by_num or by_text or by_fulltext) else created_misses).append(
+                row["id"]
+            )
 
         elif ct == "MODIFIED":
             hit = any(
@@ -90,12 +91,10 @@ def evaluate_against_changeset(result: DiffResult, gold: list[dict],
             (modified_hits if hit else modified_misses).append(row["id"])
 
         elif ct == "NOT_A_CHANGE":
-            # Any detected substantive change touching this renumbered section is a false positive.
-            flagged = (
-                new_num in created_new_nums
-                or any(new_num in (mp[0], mp[1]) or old_num in (mp[0], mp[1])
-                       for mp in modified_pairs)
-            )
+            # A cosmetic pair is a false positive only when that exact old→new alignment is
+            # reported as substantive (or its new section is reported CREATED). Merely sharing
+            # one section number with an adjacent genuine change is not a match.
+            flagged = new_num in created_new_nums or (old_num, new_num) in modified_pairs
             if flagged:
                 cosmetic_false_positives.append(row["id"])
 
@@ -111,7 +110,8 @@ def evaluate_against_changeset(result: DiffResult, gold: list[dict],
         "modified_missed": modified_misses,
         "cosmetic_false_positives": cosmetic_false_positives,
         "cosmetic_false_positive_rate": round(len(cosmetic_false_positives) / n_cosmetic, 4)
-        if n_cosmetic else 0.0,
+        if n_cosmetic
+        else 0.0,
         "detection_rate_created": round(len(created_hits) / n_created, 4) if n_created else 0.0,
         "detection_rate_modified": round(len(modified_hits) / n_modified, 4) if n_modified else 0.0,
     }

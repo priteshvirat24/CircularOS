@@ -109,6 +109,7 @@ async def _create_or_resume_run(document: RegulatoryDocument, total: int) -> Ext
             rejected_obligations=0,
             review_pending=0,
             started_at=datetime.now(UTC),
+            total_tokens=0,
             total_cost_usd=0.0,
             checkpoint_data={"version": 1, "completed_ids": [], "failures": []},
         )
@@ -151,10 +152,10 @@ async def _persist_outcome(run_id: UUID, outcome: VerificationOutcome) -> None:
                 validator_name="citation_span_match@1.0",
                 validator_type="deterministic",
                 passed=citation_passed,
-                score=min(
-                    (check.verdict.score for check in outcome.citation_checks), default=0.0
-                ),
-                message="all claimed citation spans verified" if citation_passed else "one or more citations were NOT_FOUND",
+                score=min((check.verdict.score for check in outcome.citation_checks), default=0.0),
+                message="all claimed citation spans verified"
+                if citation_passed
+                else "one or more citations were NOT_FOUND",
                 details={"checks": payload["citation_checks"], "threshold": 0.95},
             ),
             ValidationResult(
@@ -193,7 +194,7 @@ async def _persist_outcome(run_id: UUID, outcome: VerificationOutcome) -> None:
             ValidationResult(
                 obligation_id=obligation.id,
                 extraction_run_id=run.id,
-                validator_name="confidence_aggregation@phase3-default-unfitted",
+                validator_name=f"confidence_aggregation@{outcome.confidence.params_version}",
                 validator_type="deterministic",
                 passed=outcome.route is VerificationRoute.AUTO_REGISTER,
                 score=outcome.confidence.score,
@@ -202,7 +203,11 @@ async def _persist_outcome(run_id: UUID, outcome: VerificationOutcome) -> None:
             ),
         )
         db.add_all(validation_rows)
-        for task_type in ("entailment", "critic"):
+        invocation_usage = (
+            ("entailment", outcome.entailment_usage),
+            ("critic", outcome.critic_usage),
+        )
+        for task_type, usage in invocation_usage:
             db.add(
                 ModelInvocation(
                     extraction_run_id=run.id,
@@ -212,7 +217,10 @@ async def _persist_outcome(run_id: UUID, outcome: VerificationOutcome) -> None:
                     response_format="pydantic",
                     was_structured=True,
                     validation_passed=True,
-                    cost_usd=0.0,
+                    prompt_tokens=usage.prompt_tokens,
+                    completion_tokens=usage.completion_tokens,
+                    total_tokens=usage.total_tokens,
+                    cost_usd=usage.cost_usd,
                 )
             )
 
@@ -244,18 +252,14 @@ async def _persist_outcome(run_id: UUID, outcome: VerificationOutcome) -> None:
                         organization_id=obligation.organization_id,
                         obligation_id=obligation.id,
                         task_type="obligation_review",
-                        priority="high"
-                        if outcome.route is VerificationRoute.REJECT
-                        else "medium",
+                        priority="high" if outcome.route is VerificationRoute.REJECT else "medium",
                         status="pending",
                         context={
                             "verification_run_id": str(run.id),
                             "route": outcome.route.value,
                             "confidence": payload["confidence"],
                             "failed_citations": [
-                                check
-                                for check in payload["citation_checks"]
-                                if not check["valid"]
+                                check for check in payload["citation_checks"] if not check["valid"]
                             ],
                             "critic": payload["critic"],
                         },
@@ -311,7 +315,17 @@ async def _persist_outcome(run_id: UUID, outcome: VerificationOutcome) -> None:
         if str(obligation.id) not in completed:
             completed.append(str(obligation.id))
         checkpoint["completed_ids"] = completed
+        unreported = int(checkpoint.get("usage_unreported_invocations", 0))
+        checkpoint["usage_unreported_invocations"] = unreported + sum(
+            usage.total_tokens is None for _, usage in invocation_usage
+        )
         run.checkpoint_data = checkpoint
+        run.total_tokens = (run.total_tokens or 0) + sum(
+            usage.total_tokens or 0 for _, usage in invocation_usage
+        )
+        run.total_cost_usd = (run.total_cost_usd or 0.0) + sum(
+            usage.cost_usd for _, usage in invocation_usage
+        )
         run.approved_obligations = (run.approved_obligations or 0) + int(
             outcome.route is VerificationRoute.AUTO_REGISTER
         )
@@ -335,13 +349,17 @@ async def run_document_verification(
             )
         ).scalar_one()
         obligations = (
-            await db.execute(
-                select(Obligation)
-                .options(selectinload(Obligation.citations))
-                .where(Obligation.document_id == document.id, Obligation.deleted_at.is_(None))
-                .order_by(Obligation.created_at, Obligation.id)
+            (
+                await db.execute(
+                    select(Obligation)
+                    .options(selectinload(Obligation.citations))
+                    .where(Obligation.document_id == document.id, Obligation.deleted_at.is_(None))
+                    .order_by(Obligation.created_at, Obligation.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         candidates = [_candidate(obligation) for obligation in obligations]
 
     run = await _create_or_resume_run(document, len(candidates))
@@ -389,13 +407,17 @@ async def run_document_verification(
             "partial August corpus",
         )
         verified = (
-            await db.execute(
-                select(Obligation.validation_results).where(
-                    Obligation.document_id == document.id,
-                    Obligation.deleted_at.is_(None),
+            (
+                await db.execute(
+                    select(Obligation.validation_results).where(
+                        Obligation.document_id == document.id,
+                        Obligation.deleted_at.is_(None),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         citation_passed = sum(
             bool(value and value.get("citation_checks"))
             and all(check["valid"] for check in value["citation_checks"])

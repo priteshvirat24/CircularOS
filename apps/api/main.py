@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 import structlog
 from fastapi import FastAPI, Request, Response
@@ -23,7 +23,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 
 from apps.api.config import get_settings
-from apps.api.database import check_db_health
 from apps.api.routes import (
     agents,
     audit,
@@ -31,6 +30,7 @@ from apps.api.routes import (
     controls,
     diff,
     documents,
+    evaluation,
     evidence,
     health,
     obligations,
@@ -46,14 +46,14 @@ logger = structlog.get_logger()
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown."""
     settings = get_settings()
-    
+
     # Log startup info
     logger.info(
         "circularos_starting",
         app_name=settings.app_name,
         environment=settings.app_env.value,
     )
-    
+
     # Report integration status
     integrations = settings.get_integration_status()
     for name, status in integrations.items():
@@ -63,9 +63,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             integration=name,
             status=status["status"],
         )
-    
+
     yield
-    
+
     # Cleanup
     logger.info("circularos_shutting_down")
 
@@ -73,7 +73,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     settings = get_settings()
-    
+
     app = FastAPI(
         title="CircularOS API",
         description=(
@@ -87,7 +87,7 @@ def create_app() -> FastAPI:
         default_response_class=ORJSONResponse,
         lifespan=lifespan,
     )
-    
+
     # ── CORS ─────────────────────────────────────
     app.add_middleware(
         CORSMiddleware,
@@ -97,16 +97,18 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         expose_headers=["X-Request-ID", "X-Process-Time"],
     )
-    
+
     # ── Request ID + Timing + Security Headers ──
     @app.middleware("http")
-    async def add_request_metadata(request: Request, call_next) -> Response:
+    async def add_request_metadata(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         """Add request ID, timing, and security headers to every response."""
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         request.state.request_id = request_id
-        
+
         start_time = time.monotonic()
-        
+
         # Bind request context for structured logging
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(
@@ -114,28 +116,24 @@ def create_app() -> FastAPI:
             method=request.method,
             path=request.url.path,
         )
-        
+
         response = await call_next(request)
-        
+
         process_time = time.monotonic() - start_time
-        
+
         # Add response headers
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Process-Time"] = f"{process_time:.4f}"
-        
+
         # Security headers
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Permissions-Policy"] = (
-            "camera=(), microphone=(), geolocation=()"
-        )
-        
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+
         if settings.app_env.value == "production":
-            response.headers["Strict-Transport-Security"] = (
-                "max-age=31536000; includeSubDomains"
-            )
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
                 "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
@@ -145,16 +143,16 @@ def create_app() -> FastAPI:
                 "connect-src 'self' https:; "
                 "frame-ancestors 'none'"
             )
-        
+
         # Log request
         logger.info(
             "request_completed",
             status_code=response.status_code,
             process_time=round(process_time, 4),
         )
-        
+
         return response
-    
+
     # ── Routes ───────────────────────────────────
     # Each domain router mounts under a namespaced prefix. `obligations` and
     # `controls` declare their own internal prefix, so they mount at the API
@@ -168,6 +166,7 @@ def create_app() -> FastAPI:
     app.include_router(controls.router, prefix="/api/v1", tags=["controls"])
     app.include_router(reviews.router, prefix="/api/v1/reviews", tags=["reviews"])
     app.include_router(evidence.router, prefix="/api/v1/evidence", tags=["evidence"])
+    app.include_router(evaluation.router, prefix="/api/v1/evaluation", tags=["evaluation"])
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["agents"])
     app.include_router(audit.router, prefix="/api/v1/audit", tags=["audit"])
     app.include_router(settings_routes.router, prefix="/api/v1/settings", tags=["settings"])
