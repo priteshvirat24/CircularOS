@@ -16,7 +16,18 @@ Everything here traces to two real, public SEBI documents (see `PROVENANCE.md`):
 - **`obligations.jsonl`** — 123 obligation annotations from the Aug-2024 circular
   (conforms to `03_CORPUS/goldset_schema.json`).
 - **`changeset.jsonl`** — 19 labeled changes / non-changes between the two circulars.
+- **`citation_threshold.jsonl`** — 24 hand-labelled citation-match cases derived from
+  12 real Aug-2024 obligations (one supported and one material near-miss per obligation).
 - **`PROVENANCE.md`** — URLs, reference numbers, dates, SHA-256, download date.
+
+## Citation threshold set (`citation_threshold.jsonl`)
+
+The Phase-3 fuzzy citation threshold is **τ = 0.95**. On these 24 small calibration cases,
+τ=0.95 is the lowest tested operating point satisfying the mandated precision floor of
+0.98: 12 TP, 0 FP, 0 FN (precision 1.0, recall 1.0). At τ=0.94, three material near-misses
+become false positives (precision 0.8). Run `python scripts/evaluate_citation_threshold.py`
+to reproduce the threshold sweep. This is a threshold-development set, not the final
+full-corpus citation-verification rate; that headline metric remains pending Phase 4.5.
 
 ## Obligation gold set — size & composition (`obligations.jsonl`)
 

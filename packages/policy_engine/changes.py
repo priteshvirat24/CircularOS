@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, replace  # noqa: F401  (replace re-exp
 
 # ── Data shapes ────────────────────────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class ObligationFields:
     """The structured, comparable fields of a single obligation.
@@ -40,7 +41,7 @@ class ObligationFields:
     risk_level: str | None = None
 
 
-class ChangeKind(str, enum.Enum):
+class ChangeKind(enum.StrEnum):
     CREATED = "created"
     MODIFIED = "modified"
     REMOVED = "removed"
@@ -58,7 +59,7 @@ class ChangeVerdict:
         return self.kind != ChangeKind.MODIFIED or bool(self.changed_fields)
 
 
-class MaterialityLevel(str, enum.Enum):
+class MaterialityLevel(enum.StrEnum):
     NONE = "none"
     LOW = "low"
     MEDIUM = "medium"
@@ -94,8 +95,14 @@ class MaterialityVerdict:
 # ── Field normalization & comparison ───────────────────────────────────────────
 
 _TEXT_FIELDS = (
-    "normalized_obligation", "actor", "action", "object",
-    "frequency", "deadline", "evidence_requirement", "penalty_reference",
+    "normalized_obligation",
+    "actor",
+    "action",
+    "object",
+    "frequency",
+    "deadline",
+    "evidence_requirement",
+    "penalty_reference",
 )
 _LIST_FIELDS = ("conditions", "exceptions", "applicability")
 
@@ -125,6 +132,7 @@ def _diff_fields(old: ObligationFields, new: ObligationFields) -> list[str]:
 
 # ── Classification (MATHEMATICAL_FOUNDATIONS.md §3) ─────────────────────────────
 
+
 def classify_change(
     old: ObligationFields | None,
     new: ObligationFields | None,
@@ -147,16 +155,19 @@ def classify_change(
     changed = _diff_fields(old, new)
     if not changed:
         return ChangeVerdict(
-            ChangeKind.MODIFIED, (),
+            ChangeKind.MODIFIED,
+            (),
             "all structured fields equal — not a substantive change",
         )
     return ChangeVerdict(
-        ChangeKind.MODIFIED, tuple(changed),
+        ChangeKind.MODIFIED,
+        tuple(changed),
         f"structured fields changed: {', '.join(changed)}",
     )
 
 
 # ── Deterministic value parsers for the ordered rules ───────────────────────────
+
 
 def _parse_deadline_days(v: str | None) -> int | None:
     """Map common SEBI deadline phrasings to a day count (smaller = stricter).
@@ -168,12 +179,15 @@ def _parse_deadline_days(v: str | None) -> int | None:
         return None
     s = v.strip().casefold()
     # Same-day / immediate forms.
-    if re.search(r"\b(t\s*\+\s*0|same day|end of (the )?(trading )?day|eod|immediate(ly)?|intra-?day|real[- ]?time)\b", s):
+    if re.search(
+        r"\b(t\s*\+\s*0|same day|end of (the )?(trading )?day|eod|immediate(ly)?|intra-?day|real[- ]?time)\b",
+        s,
+    ):
         return 0
-    m = re.search(r"\bt\s*\+\s*(\d+)\b", s)          # T+1, T + 2
+    m = re.search(r"\bt\s*\+\s*(\d+)\b", s)  # T+1, T + 2
     if m:
         return int(m.group(1))
-    m = re.search(r"\bwithin\s+(\d+)\s+day", s)       # within 7 days
+    m = re.search(r"\bwithin\s+(\d+)\s+day", s)  # within 7 days
     if m:
         return int(m.group(1))
     m = re.search(r"\b(\d+)\s+(working|business|calendar)?\s*day", s)  # 15 days / 7 working days
@@ -213,8 +227,15 @@ def _is_high_risk(level: str | None) -> bool:
 
 # Only these fields are "material"; a change confined outside them is cosmetic/clarifying.
 _MATERIAL_FIELDS = {
-    "actor", "applicability", "deadline", "frequency",
-    "evidence_requirement", "penalty_reference", "conditions", "exceptions", "action",
+    "actor",
+    "applicability",
+    "deadline",
+    "frequency",
+    "evidence_requirement",
+    "penalty_reference",
+    "conditions",
+    "exceptions",
+    "action",
 }
 
 # Regulatory categories SEBI has formally discontinued. When a text-only change merely drops
@@ -227,9 +248,7 @@ _DISCONTINUED_TERMS = {
 }
 
 
-def _discontinued_terms_removed(
-    old: ObligationFields, new: ObligationFields
-) -> list[str]:
+def _discontinued_terms_removed(old: ObligationFields, new: ObligationFields) -> list[str]:
     """Labels of discontinued categories present in old wording but absent from new."""
     old_text = f"{_norm_text(old.normalized_obligation)} {_norm_text(old.object)}"
     new_text = f"{_norm_text(new.normalized_obligation)} {_norm_text(new.object)}"
@@ -259,16 +278,28 @@ def assess_materiality(
 
     if change.kind is ChangeKind.CREATED:
         if new is not None and _is_high_risk(new.risk_level):
-            fire("new_high_risk_obligation", MaterialityLevel.HIGH, [],
-                 f"new obligation with {new.risk_level} risk")
+            fire(
+                "new_high_risk_obligation",
+                MaterialityLevel.HIGH,
+                [],
+                f"new obligation with {new.risk_level} risk",
+            )
         else:
-            fire("new_obligation", MaterialityLevel.MEDIUM, [],
-                 "new obligation created — surface for confirmation")
+            fire(
+                "new_obligation",
+                MaterialityLevel.MEDIUM,
+                [],
+                "new obligation created — surface for confirmation",
+            )
         return _finalize(levels, reasons)
 
     if change.kind is ChangeKind.REMOVED:
-        fire("obligation_removed", MaterialityLevel.MEDIUM, [],
-             "obligation removed — surface for confirmation")
+        fire(
+            "obligation_removed",
+            MaterialityLevel.MEDIUM,
+            [],
+            "obligation removed — surface for confirmation",
+        )
         return _finalize(levels, reasons)
 
     # MODIFIED
@@ -276,7 +307,9 @@ def assess_materiality(
     if not changed:
         # No field differs → unchanged/cosmetic. NONE.
         return MaterialityVerdict(
-            MaterialityLevel.NONE, (), "no substantive field changed",
+            MaterialityLevel.NONE,
+            (),
+            "no substantive field changed",
         )
 
     assert old is not None and new is not None  # MODIFIED always has both
@@ -286,17 +319,33 @@ def assess_materiality(
         od, nd = _parse_deadline_days(old.deadline), _parse_deadline_days(new.deadline)
         if od is not None and nd is not None:
             if nd < od:
-                fire("deadline_tightened", MaterialityLevel.HIGH, ["deadline"],
-                     f"deadline tightened: {old.deadline} → {new.deadline}")
+                fire(
+                    "deadline_tightened",
+                    MaterialityLevel.HIGH,
+                    ["deadline"],
+                    f"deadline tightened: {old.deadline} → {new.deadline}",
+                )
             elif nd > od:
-                fire("deadline_relaxed", MaterialityLevel.MEDIUM, ["deadline"],
-                     f"deadline relaxed: {old.deadline} → {new.deadline}")
+                fire(
+                    "deadline_relaxed",
+                    MaterialityLevel.MEDIUM,
+                    ["deadline"],
+                    f"deadline relaxed: {old.deadline} → {new.deadline}",
+                )
             else:
-                fire("deadline_reworded", MaterialityLevel.LOW, ["deadline"],
-                     f"deadline reworded, same strictness: {old.deadline} → {new.deadline}")
+                fire(
+                    "deadline_reworded",
+                    MaterialityLevel.LOW,
+                    ["deadline"],
+                    f"deadline reworded, same strictness: {old.deadline} → {new.deadline}",
+                )
         else:
-            fire("deadline_changed_incomparable", MaterialityLevel.MEDIUM, ["deadline"],
-                 f"deadline changed (incomparable): {old.deadline} → {new.deadline}")
+            fire(
+                "deadline_changed_incomparable",
+                MaterialityLevel.MEDIUM,
+                ["deadline"],
+                f"deadline changed (incomparable): {old.deadline} → {new.deadline}",
+            )
 
     # actor_expanded (new actor/applicability set is a strict superset)
     if "actor" in changed or "applicability" in changed:
@@ -304,55 +353,92 @@ def assess_materiality(
         new_actors = _norm_set(list(new.applicability) + ([new.actor] if new.actor else []))
         added = new_actors - old_actors
         if added and old_actors < new_actors:
-            fire("actor_expanded", MaterialityLevel.HIGH,
-                 [f for f in ("actor", "applicability") if f in changed],
-                 f"actor set expanded: added {sorted(added)}")
+            fire(
+                "actor_expanded",
+                MaterialityLevel.HIGH,
+                [f for f in ("actor", "applicability") if f in changed],
+                f"actor set expanded: added {sorted(added)}",
+            )
         else:
-            fire("actor_changed", MaterialityLevel.MEDIUM,
-                 [f for f in ("actor", "applicability") if f in changed],
-                 "responsible actor / applicability changed")
+            fire(
+                "actor_changed",
+                MaterialityLevel.MEDIUM,
+                [f for f in ("actor", "applicability") if f in changed],
+                "responsible actor / applicability changed",
+            )
 
     # new_evidence_requirement
     if "evidence_requirement" in changed:
         if _norm_text(new.evidence_requirement) and not _norm_text(old.evidence_requirement):
-            fire("new_evidence_requirement", MaterialityLevel.HIGH, ["evidence_requirement"],
-                 "a new evidence requirement was added")
+            fire(
+                "new_evidence_requirement",
+                MaterialityLevel.HIGH,
+                ["evidence_requirement"],
+                "a new evidence requirement was added",
+            )
         else:
-            fire("evidence_requirement_changed", MaterialityLevel.MEDIUM, ["evidence_requirement"],
-                 "evidence requirement changed")
+            fire(
+                "evidence_requirement_changed",
+                MaterialityLevel.MEDIUM,
+                ["evidence_requirement"],
+                "evidence requirement changed",
+            )
 
     # penalty_changed
     if "penalty_reference" in changed:
         if _norm_text(new.penalty_reference) and not _norm_text(old.penalty_reference):
-            fire("penalty_introduced", MaterialityLevel.HIGH, ["penalty_reference"],
-                 "a penalty reference was introduced")
+            fire(
+                "penalty_introduced",
+                MaterialityLevel.HIGH,
+                ["penalty_reference"],
+                "a penalty reference was introduced",
+            )
         else:
-            fire("penalty_changed", MaterialityLevel.MEDIUM, ["penalty_reference"],
-                 "penalty reference changed")
+            fire(
+                "penalty_changed",
+                MaterialityLevel.MEDIUM,
+                ["penalty_reference"],
+                "penalty reference changed",
+            )
 
     # frequency_increased
     if "frequency" in changed:
         of, nf = _parse_frequency_rank(old.frequency), _parse_frequency_rank(new.frequency)
         if of is not None and nf is not None and nf > of:
-            fire("frequency_increased", MaterialityLevel.MEDIUM, ["frequency"],
-                 f"reporting frequency increased: {old.frequency} → {new.frequency}")
+            fire(
+                "frequency_increased",
+                MaterialityLevel.MEDIUM,
+                ["frequency"],
+                f"reporting frequency increased: {old.frequency} → {new.frequency}",
+            )
         elif of is not None and nf is not None and nf < of:
-            fire("frequency_decreased", MaterialityLevel.LOW, ["frequency"],
-                 f"reporting frequency decreased: {old.frequency} → {new.frequency}")
+            fire(
+                "frequency_decreased",
+                MaterialityLevel.LOW,
+                ["frequency"],
+                f"reporting frequency decreased: {old.frequency} → {new.frequency}",
+            )
         else:
-            fire("frequency_changed", MaterialityLevel.MEDIUM, ["frequency"],
-                 f"reporting frequency changed: {old.frequency} → {new.frequency}")
+            fire(
+                "frequency_changed",
+                MaterialityLevel.MEDIUM,
+                ["frequency"],
+                f"reporting frequency changed: {old.frequency} → {new.frequency}",
+            )
 
     # conditions_changed / exceptions_changed
     cond_fields = [f for f in ("conditions", "exceptions") if f in changed]
     if cond_fields:
-        fire("conditions_changed", MaterialityLevel.MEDIUM, cond_fields,
-             "conditions/exceptions changed materially")
+        fire(
+            "conditions_changed",
+            MaterialityLevel.MEDIUM,
+            cond_fields,
+            "conditions/exceptions changed materially",
+        )
 
     # action_changed (the core verb of the obligation)
     if "action" in changed:
-        fire("action_changed", MaterialityLevel.MEDIUM, ["action"],
-             "the required action changed")
+        fire("action_changed", MaterialityLevel.MEDIUM, ["action"], "the required action changed")
 
     # Descriptive-text-only change (no material field fired). Distinguish a terminology cleanup
     # (a discontinued category dropped from the wording) from a generic wording clarification —
@@ -361,12 +447,20 @@ def assess_materiality(
         text_only = sorted(changed - _MATERIAL_FIELDS)
         removed = _discontinued_terms_removed(old, new)
         if removed:
-            fire("terminology_cleanup", MaterialityLevel.LOW, text_only,
-                 f"terminology cleanup: removed discontinued category "
-                 f"{', '.join(repr(t) for t in removed)}; no change to the underlying duty")
+            fire(
+                "terminology_cleanup",
+                MaterialityLevel.LOW,
+                text_only,
+                f"terminology cleanup: removed discontinued category "
+                f"{', '.join(repr(t) for t in removed)}; no change to the underlying duty",
+            )
         else:
-            fire("wording_clarified", MaterialityLevel.LOW, text_only,
-                 "wording clarified; no structured field changed")
+            fire(
+                "wording_clarified",
+                MaterialityLevel.LOW,
+                text_only,
+                "wording clarified; no structured field changed",
+            )
 
     return _finalize(levels, reasons)
 

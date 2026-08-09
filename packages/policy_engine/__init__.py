@@ -17,6 +17,30 @@ from packages.policy_engine.changes import (
     assess_materiality,
     classify_change,
 )
+from packages.policy_engine.citations import (
+    CITATION_THRESHOLD,
+    CitationVerdict,
+    MatchType,
+    verify_citation,
+)
+from packages.policy_engine.confidence import (
+    DEFAULT_CONFIDENCE_PARAMS,
+    ENTAILMENT_THRESHOLD,
+    ConfidenceBand,
+    ConfidenceParams,
+    ConfidenceVerdict,
+    ExtractionSignals,
+    aggregate_confidence,
+    threshold_entailment,
+)
+from packages.policy_engine.impact import (
+    ImpactChange,
+    ImpactSet,
+    OrgGraph,
+    OrgNode,
+    OrgNodeKind,
+    resolve_blast_radius,
+)
 
 __all__ = [
     "ObligationFields",
@@ -26,4 +50,22 @@ __all__ = [
     "MaterialityVerdict",
     "classify_change",
     "assess_materiality",
+    "CITATION_THRESHOLD",
+    "CitationVerdict",
+    "MatchType",
+    "verify_citation",
+    "DEFAULT_CONFIDENCE_PARAMS",
+    "ENTAILMENT_THRESHOLD",
+    "ConfidenceBand",
+    "ConfidenceParams",
+    "ConfidenceVerdict",
+    "ExtractionSignals",
+    "aggregate_confidence",
+    "threshold_entailment",
+    "ImpactChange",
+    "ImpactSet",
+    "OrgGraph",
+    "OrgNode",
+    "OrgNodeKind",
+    "resolve_blast_radius",
 ]
