@@ -1,3 +1,90 @@
+# Task: Phase 5 — SupTech Supervisory Mirror
+
+## Goal
+Build a deterministic, read-only supervisory view over the real August stockbroker
+registry and two clearly-labelled seeded intermediary populations, with one provable
+privacy choke-point and no LLM/network path.
+
+## Plan
+- [x] Baseline the clean/dirty worktree and dev-DB counts; inspect the real registry,
+      latest completed diff run, and existing tenant/control/evidence rows without writes.
+- [x] Confirm the existing `supervisory_viewer` role and represent supervisor/intermediary
+      org types plus the `seeded` disclosure in existing organization metadata (no new
+      snapshot table unless live aggregation proves slow).
+- [x] Build `packages/suptech/access.py` as the only authorization/data-access choke-point,
+      returning typed aggregate inputs only and rejecting non-supervisor role/org contexts.
+- [x] Build pure deterministic aggregation for coverage, evidence freshness, gaps/severity,
+      market rollups, and latest-circular adoption over the real Phase-2 change rows.
+- [x] Add an idempotent `scripts/seed_suptech.py`: tenant A uses the real 45-obligation
+      August registry; B/C reference the same registry and seed contrasting mappings,
+      evidence, gaps, and adoption with an explicit real-vs-seeded audit header.
+- [x] Add three read-only `/api/v1/suptech` endpoints, all routed through `access.py`, and
+      harden raw document/control reads so a supervisory viewer receives 403.
+- [x] Add deterministic/unit/API/privacy/idempotency tests, including payload field allowlists
+      and cross-organization raw document/control denial.
+- [x] Run the seed twice on the isolated test DB, exercise all three APIs, inspect the SupTech
+      package for LLM/network imports, and run import/ruff/mypy/full pytest gates.
+- [x] Prove dev-DB counts unchanged by tests, then intentionally seed the three-tenant dev
+      population once (and rerun idempotently) for the requested live demo data; report the
+      exact real-vs-seeded posture and adoption output.
+- [x] Self-review `git status`/`git diff`; leave everything unstaged for user review.
+
+## Risks and invariants
+- Tenant A's registry count and the tracked Jun-2025 change set must be discovered from real
+  DB rows; the seed must abort on ambiguity or missing expected sections rather than invent.
+- B/C operational posture is deliberately seeded and every API surface must disclose it.
+- A covered obligation requires both an active control mapping and valid evidence. Stale,
+  insufficient, pending, rejected, or absent evidence is not coverage.
+- Supervisory payloads expose names, IDs, aggregate counts/percentages, and gap keys only;
+  never source/document text, control descriptions, evidence paths, or mapping rationale.
+- `packages/suptech/` contains no LLM or network imports. No Git staging/history mutation.
+
+## Done criteria
+- [x] Supervisor org type and `supervisory_viewer` gate all SupTech endpoints.
+- [x] The seed is deterministic/idempotent and creates real A + labelled seeded B/C.
+- [x] Posture, adoption, and gap APIs return live aggregate-only results for all three.
+- [x] Both required privacy tests pass with explicit 403 and payload allowlist assertions.
+- [x] Ruff/mypy/full pytest pass on the isolated DB; dev counts are unchanged by tests.
+- [x] Final report contains exact posture/adoption results and a Phase-6 handoff.
+
+## Review (Phase 5)
+
+**Real anchors and population:** the live database supplied the existing stock-broker tenant,
+the real 45-obligation August registry, the 57-obligation June document, and the latest completed
+five-row diff. The SupTech tracker selects the four MEDIUM/HIGH CREATED rows (§17/§71/§72/§88)
+and deterministically excludes the LOW §31→§32 terminology cleanup. Tenant A is the existing
+unseeded organization, surfaced as `Tenant A — Real Registry`; only SupTech metadata was added.
+B/C reference the same real registry and
+are labelled `seeded: true` on every API card/status.
+
+**Live aggregate posture:** Tenant A is 0/45 covered, evidence 0 valid / 0 stale / 45 missing,
+45 gaps, and 0/4 latest-circular adoption. This is the honest existing implementation state;
+the script did not manufacture controls or evidence for A. Seeded B is 40/45 covered (88.89%),
+evidence 40/3/2, 5 gaps, and 4/4 adoption. Seeded C is 10/45 covered (22.22%), evidence 10/12/23,
+35 gaps, and 1/4 adoption. Market rollup: 37.04% coverage, 50 valid / 15 stale / 70 missing,
+85 open gaps, and 41.67% latest-circular adoption.
+
+**Adoption and privacy:** every tracked change is sourced from the real latest diff. §17 is
+operationalized by seeded B/C (66.67% market adoption); §71, §72, and §88 by seeded B only
+(33.33% each). The §71 gap drill-down returns unseeded A and seeded C by name + aggregate
+posture only. Live requests for a raw document and control as the supervisory viewer both
+returned 403. Tests recursively reject raw/document/control/evidence field names from every
+supervisory payload. All non-SupTech data routers share the same supervisory-denial dependency;
+all three SupTech routes construct the authorized aggregate-only access object from `access.py`.
+
+**Idempotency, quality, and isolation:** the first dev seed created 3 orgs, 1 viewer, 1
+membership, 2 controls, 75 control mappings, 65 evidence markers/mappings, and 8 adoption tasks;
+the second created `{}`. The focused 8-test suite and full 111-test suite pass. Imports,
+`py_compile`, targeted Ruff (only the accepted FastAPI B008 idiom excluded), formatting, and
+mypy pass. Dev row counts were exactly identical before/after the full suite (including 1
+org, 102 obligations, 4 diff runs, 21 changes, 1 control, and zero evidence/tasks before the
+intentional demo seed). Inspection found no LLM/provider/network imports in `packages/suptech/`.
+
+**Next:** Phase 6 can render these three already-live endpoints. B/C remain explicitly seeded;
+Phase 7 replaces them with onboarded intermediaries without changing aggregation or privacy code.
+
+---
+
 # Task: Phase 4 — Eval Harness (code-complete; headline numbers deferred to 4.5)
 
 ## Goal

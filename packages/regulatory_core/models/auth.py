@@ -29,6 +29,14 @@ class UserRole(str, enum.Enum):
     SUPERVISORY_VIEWER = "supervisory_viewer"
 
 
+class OrganizationType(enum.StrEnum):
+    """Supported tenant categories while the persisted column remains forward-compatible."""
+
+    STOCK_BROKER = "stock_broker"
+    INVESTMENT_ADVISER = "investment_adviser"
+    SUPERVISOR = "supervisor"
+
+
 class Organization(Base, TimestampMixin, SoftDeleteMixin):
     """Multi-tenant organization."""
 
