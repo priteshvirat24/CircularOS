@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.database import get_db
-from apps.api.dependencies import get_current_user
+from apps.api.dependencies import get_current_user_optional
 from packages.regulatory_core.models.auth import User
 from packages.suptech.access import SupTechAccess, SupTechDataError
 from packages.suptech.aggregation import (
@@ -22,10 +22,10 @@ router = APIRouter()
 
 
 async def _authorized_market(
-    db: AsyncSession, user: User, circular_id: uuid.UUID | None = None
+    db: AsyncSession, user: User | None, circular_id: uuid.UUID | None = None
 ) -> MarketInput:
     try:
-        access = await SupTechAccess.authorize(db, user)
+        access = SupTechAccess.demo_read(db) if user is None else await SupTechAccess.authorize(db, user)
         return await access.load_market(circular_id)
     except SupTechDataError as exc:
         raise HTTPException(
@@ -36,7 +36,7 @@ async def _authorized_market(
 
 @router.get("/posture")
 async def get_market_posture(
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Return aggregate posture cards and a market-wide rollup."""
@@ -46,7 +46,7 @@ async def get_market_posture(
 @router.get("/adoption/{circular_id}")
 async def get_circular_adoption(
     circular_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Return operationalization status for material new/modified circular changes."""
@@ -56,7 +56,7 @@ async def get_circular_adoption(
 @router.get("/gaps/{gap_key}")
 async def get_systemic_gap(
     gap_key: str,
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Return affected intermediary names and posture for one aggregate gap key."""

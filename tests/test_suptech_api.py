@@ -358,5 +358,10 @@ def test_supervisor_is_denied_other_org_raw_document_and_control(
     assert "aggregate SupTech endpoints only" in document_response.json()["detail"]
 
 
-def test_suptech_endpoint_requires_supervisory_viewer(client: TestClient) -> None:
-    assert client.get("/api/v1/suptech/posture").status_code == 401
+def test_suptech_public_demo_endpoint(
+    client: TestClient, suptech_fixture: SupTechFixture
+) -> None:
+    response = client.get("/api/v1/suptech/posture")
+
+    assert response.status_code == 200
+    _assert_aggregate_only(response.json())

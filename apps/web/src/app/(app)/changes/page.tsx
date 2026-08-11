@@ -1,118 +1,20 @@
 "use client";
 
-import React from 'react';
-import { Card, CardContent } from '@/components/ui/Card';
-import { BellRing, GitCommit, ArrowRight, AlertTriangle } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { useState } from "react";
+import { AlertTriangle, GitCommit } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/Card";
+import { api, Change, Diff } from "@/lib/api/client";
+import { DataState, useApiData } from "@/lib/api/useApiData";
+import { cn } from "@/lib/utils";
 
 export default function ChangesPage() {
-  const diffs = [
-    { 
-      id: 'DIFF-881', 
-      title: 'Amendment to Margin Requirements', 
-      source: 'SEBI Circular', 
-      date: '2 hours ago',
-      impact: 'High',
-      changes: [
-        { type: 'added', text: 'New obligation: Intraday margin monitoring required every 15 minutes.' },
-        { type: 'modified', text: 'Reporting deadline shifted from T+1 to T+0 (EOD).' }
-      ]
-    },
-    { 
-      id: 'DIFF-882', 
-      title: 'Relaxation of KYC Norms for FPIs', 
-      source: 'RBI Notification', 
-      date: 'Yesterday',
-      impact: 'Medium',
-      changes: [
-        { type: 'removed', text: 'Physical signature requirement waived for Category I FPIs.' },
-        { type: 'modified', text: 'Digital verification validity extended to 3 years.' }
-      ]
-    }
-  ];
-
-  return (
-    <div className="space-y-6 pb-12">
-      <div className="flex justify-between items-end mb-8">
-        <div>
-          <h1 className="text-[32px] font-semibold tracking-tight text-[var(--text-primary)]">Regulatory Changes</h1>
-          <p className="text-[var(--text-secondary)] mt-1">AI-driven diffs of new regulations against your existing controls</p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
-        <Card className="bg-white border-[var(--border-default)] shadow-sm">
-          <CardContent className="p-5 flex flex-col justify-center h-full">
-            <div className="flex items-center space-x-2 text-[var(--primary)] mb-2">
-              <BellRing size={18} />
-              <span className="text-[14px] font-semibold">New Alerts</span>
-            </div>
-            <p className="text-[32px] font-bold text-[var(--text-primary)]">12</p>
-          </CardContent>
-        </Card>
-        <Card className="bg-white border-[var(--border-default)] shadow-sm">
-          <CardContent className="p-5 flex flex-col justify-center h-full">
-            <div className="flex items-center space-x-2 text-[#D97706] mb-2">
-              <AlertTriangle size={18} />
-              <span className="text-[14px] font-semibold">Impactful Changes</span>
-            </div>
-            <p className="text-[32px] font-bold text-[var(--text-primary)]">4</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="space-y-6 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-[2px] before:bg-gradient-to-b before:from-transparent before:via-[var(--border-default)] before:to-transparent">
-        {diffs.map((diff, idx) => (
-          <div key={idx} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
-            {/* Timeline dot */}
-            <div className="flex items-center justify-center w-10 h-10 rounded-full border-4 border-[var(--background-secondary)] bg-white text-[var(--text-muted)] group-hover:text-[var(--primary)] group-hover:border-[var(--primary-light)] shadow-sm shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 z-10 transition-all">
-              <GitCommit size={18} />
-            </div>
-            
-            {/* Content Card */}
-            <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] p-5 rounded-2xl border border-[var(--border-subtle)] bg-white shadow-sm hover:border-[var(--primary)] hover:shadow-md transition-all">
-              <div className="flex items-center justify-between mb-3">
-                <span className={cn(
-                  "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
-                  diff.impact === 'High' ? 'bg-[#FEF2F2] text-[#DC2626]' : 'bg-[#FFFBEB] text-[#D97706]'
-                )}>
-                  {diff.impact} Impact
-                </span>
-                <span className="text-[12px] text-[var(--text-muted)] font-mono">{diff.date}</span>
-              </div>
-              <h3 className="font-semibold text-[16px] text-[var(--text-primary)] mb-1">{diff.title}</h3>
-              <p className="text-[13px] text-[var(--text-secondary)] mb-4">{diff.source}</p>
-              
-              <div className="space-y-2 bg-[var(--surface-subtle)] rounded-xl p-4 border border-[var(--border-subtle)]">
-                {diff.changes.map((change, cIdx) => (
-                  <div key={cIdx} className="flex items-start space-x-3 text-[14px]">
-                    <div className="mt-[2px] shrink-0">
-                      {change.type === 'added' ? <span className="text-[#10B981] font-bold">+</span> :
-                       change.type === 'removed' ? <span className="text-[#EF4444] font-bold">-</span> :
-                       <span className="text-[#3B82F6] font-bold">~</span>}
-                    </div>
-                    <span className={cn(
-                      "font-medium",
-                      change.type === 'added' ? 'text-[#064E3B]' :
-                      change.type === 'removed' ? 'text-[#7F1D1D] line-through opacity-70' :
-                      'text-[#1E3A8A]'
-                    )}>
-                      {change.text}
-                    </span>
-                  </div>
-                ))}
-              </div>
-              
-              <div className="mt-5 pt-4 border-t border-[var(--border-subtle)] flex justify-end">
-                <button className="flex items-center space-x-1 text-[13px] text-[var(--primary)] hover:text-[var(--primary-hover)] font-medium transition-colors">
-                  <span>View Impact Analysis</span>
-                  <ArrowRight size={14} />
-                </button>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+  const { data, loading, error } = useApiData<Diff | null>(async () => { const runs = await api.diffRuns(); return runs.diff_runs[0] ? api.diff(runs.diff_runs[0].diff_run_id) : null; });
+  const [selected, setSelected] = useState<Change | null>(null);
+  const summary = data?.summary || {};
+  return <div className="space-y-6 pb-12"><div><h1 className="text-[32px] font-semibold tracking-tight">Regulatory Changes</h1><p className="text-[var(--text-secondary)] mt-1">Persisted deterministic diff against the latest circular</p></div><DataState loading={loading} error={error} empty={!data || data.changes.length === 0}><div className="grid grid-cols-1 lg:grid-cols-4 gap-6"><SummaryCard label="Created" value={summary.created} /><SummaryCard label="Modified" value={summary.modified} /><SummaryCard label="Removed" value={summary.removed} /><SummaryCard label="Requires confirmation" value={data?.changes.filter(change => change.requires_confirmation).length} /></div><div className="space-y-4">{data?.changes.map(change => <button key={change.id} onClick={() => setSelected(change)} className="w-full text-left"><Card className="hover:border-[var(--primary)] transition-all"><CardContent className="p-5"><div className="flex justify-between gap-4"><div className="flex gap-3"><GitCommit className="mt-1 text-[var(--primary)]" size={18} /><div><div className="flex items-center gap-2"><TypeBadge value={change.change_type} /><TypeBadge value={change.materiality || "none"} /><span className="text-xs text-[var(--text-muted)]">{change.requires_confirmation ? "Requires confirmation" : "Deterministic"}</span></div><p className="font-semibold mt-3">{change.obligation || change.new_ref || change.old_ref || "Persisted regulatory change"}</p><div className="mt-3 flex flex-wrap gap-2">{change.materiality_reasons.map(reason => <span key={reason} className="text-[11px] px-2 py-1 bg-[var(--surface-subtle)] border rounded">{reason}</span>)}</div></div></div><span className="text-xs font-mono text-[var(--text-muted)]">{change.id.slice(0, 13)}</span></div></CardContent></Card></button>)}</div></DataState>{selected && <ChangeDetail change={selected} close={() => setSelected(null)} />}</div>;
 }
+
+function SummaryCard({ label, value }: { label: string; value: number | undefined }) { return <Card><CardContent className="p-5"><div className="flex items-center gap-2 text-[var(--primary)]"><AlertTriangle size={16} /><span className="text-sm font-semibold">{label}</span></div><p className="text-3xl font-bold mt-3">{value ?? "—"}</p></CardContent></Card>; }
+function TypeBadge({ value }: { value: string }) { const tone = value === "created" ? "bg-[#ECFDF5] text-[#059669]" : value === "modified" ? "bg-[#EFF6FF] text-[#2563EB]" : value === "high" ? "bg-[#FEF2F2] text-[#DC2626]" : "bg-[var(--surface-subtle)] text-[var(--text-secondary)]"; return <span className={cn("text-[10px] uppercase font-bold px-2 py-0.5 rounded", tone)}>{value}</span>; }
+function ChangeDetail({ change, close }: { change: Change; close: () => void }) { return <div className="fixed inset-0 bg-black/20 z-50 flex justify-end"><aside className="w-full max-w-xl bg-white h-full shadow-xl p-6 overflow-y-auto"><button onClick={close} className="text-sm text-[var(--primary)]">Close</button><h2 className="text-xl font-semibold mt-4">{change.change_type} change</h2><p className="mt-3 text-sm">{change.obligation || "—"}</p>{change.change_type === "modified" ? <div className="grid grid-cols-2 gap-4 mt-6"><TextPanel label="Previous" text={change.old_text} /><TextPanel label="Current" text={change.new_text} /></div> : <TextPanel label="Source citation" text={change.new_text || String(change.citations.new || "—")} />}{change.changed_fields.length > 0 && <div className="mt-6"><p className="text-xs uppercase font-bold text-[var(--text-muted)]">Changed fields</p><div className="flex flex-wrap gap-2 mt-2">{change.changed_fields.map(field => <span key={field} className="text-xs border rounded px-2 py-1">{field}</span>)}</div></div>}</aside></div>; }
+function TextPanel({ label, text }: { label: string; text: string | null }) { return <div className="mt-6"><p className="text-xs uppercase font-bold text-[var(--text-muted)]">{label}</p><p className="mt-2 p-4 bg-[var(--surface-subtle)] border rounded-lg text-sm leading-relaxed">{text || "—"}</p></div>; }

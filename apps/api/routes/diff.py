@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.database import get_db
-from apps.api.dependencies import get_current_user
+from apps.api.dependencies import get_current_user, get_current_user_optional
 from apps.api.services.diff_service import run_diff_async
 from packages.regulatory_core.models.auth import User
 from packages.regulatory_core.models.documents import RegulatoryDocument
@@ -82,7 +82,7 @@ async def trigger_diff(
 @router.get("")
 async def list_diff_runs(
     limit: int = Query(20, ge=1, le=100),
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """List recent diff runs (newest first)."""
@@ -108,7 +108,7 @@ async def list_diff_runs(
 @router.get("/{diff_run_id}")
 async def get_diff(
     diff_run_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Return a diff run's full change-list in the documented output contract."""

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.config import get_settings
 from apps.api.database import get_db
-from apps.api.dependencies import get_current_user, get_org_id
+from apps.api.dependencies import get_current_user, get_current_user_optional, get_org_id
 from packages.regulatory_core.models.auth import User
 from packages.regulatory_core.models.documents import (
     Clause, DocumentPage, DocumentSection, DocumentStatus, DocumentType,
@@ -45,7 +45,7 @@ async def list_documents(
     status_filter: str | None = Query(None, alias="status"),
     doc_type: str | None = Query(None, alias="type"),
     search: str | None = None,
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ):
     """List regulatory documents with filtering and pagination."""
@@ -55,11 +55,14 @@ async def list_documents(
     
     # Global documents (org_id is null) are visible to all
     # Org-specific documents require membership
-    org_ids = [m.organization_id for m in user.memberships if m.is_active]
-    query = query.where(
-        (RegulatoryDocument.organization_id == None) |
-        (RegulatoryDocument.organization_id.in_(org_ids))
-    )
+    if user is None:
+        query = query.where(RegulatoryDocument.organization_id.is_(None))
+    else:
+        org_ids = [m.organization_id for m in user.memberships if m.is_active]
+        query = query.where(
+            (RegulatoryDocument.organization_id == None) |
+            (RegulatoryDocument.organization_id.in_(org_ids))
+        )
     
     if status_filter:
         try:

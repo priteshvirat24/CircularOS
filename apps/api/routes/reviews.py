@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.database import get_db
-from apps.api.dependencies import get_current_user, get_org_id
+from apps.api.dependencies import get_current_user, get_current_user_optional, get_org_id
 from packages.regulatory_core.models.auth import AuditEvent, User
 from packages.regulatory_core.models.obligations import (
     Obligation, ObligationStatus, ReviewAction, ReviewDecision, ReviewTask,
@@ -32,7 +32,7 @@ async def list_review_tasks(
     page_size: int = Query(20, ge=1, le=100),
     status_filter: str = Query("pending", alias="status"),
     task_type: str | None = None,
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ):
     """List review tasks in the queue."""

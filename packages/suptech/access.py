@@ -15,7 +15,7 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.dependencies import get_current_user
+from apps.api.dependencies import get_current_user_optional
 from packages.regulatory_core.models.auth import (
     Organization,
     OrganizationMembership,
@@ -57,14 +57,15 @@ class SupTechDataError(RuntimeError):
 
 
 def deny_supervisory_raw_access(
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_current_user_optional),
 ) -> None:
     """Deny supervisory viewers every non-SupTech data router.
 
     The viewer role is deliberately narrower than an auditor role: its only data surface is the
-    aggregate API guarded below. Authentication and health endpoints remain available.
+    aggregate API guarded below. Anonymous access is permitted only where the endpoint itself
+    explicitly exposes a public demo read.
     """
-    if getattr(user, "_current_role", None) == UserRole.SUPERVISORY_VIEWER.value:
+    if user is not None and getattr(user, "_current_role", None) == UserRole.SUPERVISORY_VIEWER.value:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Supervisory viewers may access aggregate SupTech endpoints only",
@@ -121,6 +122,11 @@ class SupTechAccess:
             raise HTTPException(status_code=403, detail="Active supervisory membership required")
         if row.entity_type != OrganizationType.SUPERVISOR.value:
             raise HTTPException(status_code=403, detail="Supervisor organization required")
+        return cls(db, _AUTHORIZED)
+
+    @classmethod
+    def demo_read(cls, db: AsyncSession) -> SupTechAccess:
+        """Create the aggregate-only demo read context without exposing raw tenant records."""
         return cls(db, _AUTHORIZED)
 
     async def load_market(self, circular_id: uuid.UUID | None = None) -> MarketInput:

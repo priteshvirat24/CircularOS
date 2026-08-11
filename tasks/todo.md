@@ -1,3 +1,87 @@
+# Task: Phase 6 — Wire Frontend to Real Backend
+
+## API map
+
+| Surface | Live API contract | Frontend use |
+|---|---|---|
+| Dashboard | `GET /api/v1/obligations`, `GET /api/v1/diff`, `GET /api/v1/evaluation/runs/{id}`, `GET /api/v1/suptech/posture` | Real registry, latest diff, evaluation, and market rollups. |
+| Documents | `GET /api/v1/documents` | The two ingested circulars and their persisted metadata. |
+| Obligations | `GET /api/v1/obligations` and `GET /api/v1/obligations/{id}` | 50-row pages plus real verification/detail fields. |
+| Changes | `GET /api/v1/diff`, `GET /api/v1/diff/{id}` | Latest persisted change-list and materiality rationale. |
+| Controls | `GET /api/v1/controls`, `GET /api/v1/evidence` | Persisted control library plus evidence ledger/mapping totals. |
+| Workbench | `GET /api/v1/reviews`, `POST /api/v1/reviews/{id}/decision` | Real pending review tasks and decisions, with read-only fallback. |
+| Agent runs | `GET /api/v1/agents/runs` | Persisted extraction run totals and trace data. |
+| Supervisory view | `GET /api/v1/suptech/posture`, `GET /api/v1/suptech/adoption/{circular_id}`, `GET /api/v1/suptech/gaps/{gap_key}` | Aggregate-only posture, adoption, and gap drill-down. |
+| Evaluation view | `GET /api/v1/evaluation/runs/{id}` | Persisted F1/CI, diff, citation, routing and failure metrics. |
+
+## Plan
+
+- [x] Inspect the existing API response shapes and add only missing read-contract fields needed to render real verification, pagination, mapping, and latest-run surfaces.
+- [x] Add the typed, JWT-aware frontend API client and shared loading/error/empty primitives matching the existing UI tokens.
+- [x] Convert each current navigation page from hardcoded data to the mapped contracts; preserve Judge Mode and the existing visual shell.
+- [x] Add supervisory and evaluation views to the existing sidebar pattern, using only aggregate supervisory data.
+- [x] Verify the real API path against the dev database, remove mock markers from demo surfaces, run TypeScript checks/build, and leave a review report without staging or committing.
+
+## Risks and invariants
+
+- The browser holds access credentials only in React memory; no localStorage/sessionStorage data cache is introduced.
+- No fake fallback metrics: unavailable values render as an em dash and meaningful API failures remain visible.
+- The obligation registry remains paginated at 50 rows per request; the detail panel uses the persisted verification record.
+- Judge Mode providers and scenes are not changed.
+
+## Done criteria
+
+- [x] Every demo-path surface issues authenticated real API requests with loading, empty, and error states.
+- [x] The registry renders at most 50 real obligations at once with an auditable verification panel.
+- [x] Dashboard, diff, controls, review queue, agents, supervisory, and evaluation surfaces contain no mock datasets.
+- [x] `npx tsc --noEmit` and `npm run build` pass; frontend mock-marker sweep is clean.
+
+## Review (Phase 6)
+
+Converted dashboard, documents (including real PDF ingest), the August-2024 obligation registry,
+changes, controls/evidence, workbench, agent runs, evaluation, and the aggregate-only supervisory
+posture/adoption/gap drill-down. Authentication is a minimal JWT sign-in held in React memory;
+no browser storage is used. Judge Mode is unchanged.
+
+Deleted mock datasets: `traces` (agents), `diffs` (changes), `controls`, `documents`,
+`obligations`, and `tasks` (workbench), plus dashboard's fabricated inline KPI/activity/action
+collections. The sidebar identity now comes from the authenticated session.
+
+Live API smoke against the dev database returned **2,120** August obligations, **50** per page,
+and a persisted citation-verification result of **2,050/2,120 = 96.70%**. The detail contract
+includes citation checks, entailment, critic, confidence, and deterministic route. Controls
+returned 18 persisted rows with real mapping counts. The mutable current registry statuses were
+1,821 validated / 137 review-pending / 162 rejected; the evaluation UI uses persisted evaluation
+routing rather than fabricating a replacement split.
+
+Quality gates passed: focused API tests **8/8**, Ruff on touched API/test files, `npx tsc --noEmit`,
+and `npm run build`. The mock sweep (`const … = [`, `mockData`, `dummyData`, `DIFF-881`, `Mock data`,
+`fake data`) found no matches on demo app routes. Nothing was staged or committed.
+
+Next: Phase 7 demo/pitch hardening and an authenticated browser walkthrough in the final demo
+environment.
+
+## Wiring fix addendum — public demo reads
+
+- The dashboard router is mounted at `GET /api/v1/dashboard`; its response now contains public
+  document metadata, the persisted obligation count, the counted latest-diff change total and
+  summary, plus the latest extraction-evaluation headline.
+- `apps/web/.env.local` supplies `NEXT_PUBLIC_API_URL=http://localhost:8000`; the typed client
+  derives every API request from that origin and appends `/api/v1` once.
+- Anonymous access is permitted only for demo reads: dashboard; document list; obligation list,
+  summary, and detail; diff list/detail; controls; evidence list; review queue; extraction-run
+  list; latest evaluation; and aggregate-only SupTech posture/adoption/gap endpoints. Ingestion,
+  updates, deletes, review decisions, diff triggers, and raw/private detail endpoints still
+  require authentication.
+- CORS preflight from `http://localhost:3000` returns `200` with the expected allow-origin header.
+  TypeScript checking and the frontend production build pass.
+- Live browser/API data verification is currently blocked outside the application: the FastAPI
+  process returns `500 Internal Server Error` for `/api/v1/dashboard` because Docker's daemon is
+  unavailable and therefore the configured local Postgres instance cannot be reached. No mock or
+  fallback data was introduced to hide that failure.
+
+---
+
 # Task: Phase 4.5 — Mistral Full-Corpus Extraction, Eval, and Calibration
 
 ## Goal

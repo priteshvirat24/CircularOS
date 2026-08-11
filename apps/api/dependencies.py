@@ -91,6 +91,23 @@ def require_role(*roles: UserRole):
     return _check_role
 
 
+def require_demo_read_role(*roles: UserRole):
+    """Permit anonymous reads on the demo path while preserving authenticated RBAC writes."""
+
+    async def _check_role(user: User | None = Depends(get_current_user_optional)) -> User | None:
+        if user is None or user.is_superuser:
+            return user
+        current_role = getattr(user, "_current_role", None)
+        if current_role and UserRole(current_role) in roles:
+            return user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Insufficient permissions. Required roles: {[r.value for r in roles]}",
+        )
+
+    return _check_role
+
+
 def get_org_id(user: User = Depends(get_current_user)) -> uuid.UUID:
     """Extract organization ID from the current user's token context."""
     org_id = getattr(user, "_current_org_id", None)

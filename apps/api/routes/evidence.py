@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.database import get_db
-from apps.api.dependencies import get_current_user
+from apps.api.dependencies import get_current_user, get_current_user_optional
 from packages.regulatory_core.models.auth import User
 from packages.regulatory_core.models.compliance import (
     EvidenceArtifact, EvidenceAuditEntry, EvidenceStatus,
@@ -24,7 +24,7 @@ async def list_evidence(
     page_size: int = Query(20, ge=1, le=100),
     status_filter: str | None = Query(None, alias="status"),
     obligation_id: uuid.UUID | None = None,
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ):
     """List evidence artifacts with filtering."""

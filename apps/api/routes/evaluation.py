@@ -4,28 +4,23 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.database import get_db
-from apps.api.dependencies import get_current_user
+from apps.api.dependencies import get_current_user_optional
 from packages.regulatory_core.models.auth import User
 from packages.regulatory_core.models.evaluation import EvaluationDataset, EvaluationRun
 
 router = APIRouter()
 
 
-@router.get("/runs/{evaluation_run_id}")
-async def get_evaluation_run(
-    evaluation_run_id: uuid.UUID,
-    user: User = Depends(get_current_user),  # noqa: B008 — FastAPI dependency injection
-    db: AsyncSession = Depends(get_db),  # noqa: B008 — FastAPI dependency injection
+async def _evaluation_payload(
+    run: EvaluationRun,
+    db: AsyncSession,
 ) -> dict:
-    """Return the persisted evaluation contract; no metric is computed in the route."""
-    del user
-    run = await db.get(EvaluationRun, evaluation_run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="evaluation run not found")
+    """Serialize persisted results only; evaluation is never recomputed at read time."""
     dataset = await db.get(EvaluationDataset, run.dataset_id)
     metrics = run.metrics or {}
     return {
@@ -66,3 +61,34 @@ async def get_evaluation_run(
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
     }
+
+
+@router.get("/runs/latest")
+async def get_latest_evaluation_run(
+    run_type: str | None = Query(None),
+    user: User | None = Depends(get_current_user_optional),  # noqa: B008 — FastAPI dependency injection
+    db: AsyncSession = Depends(get_db),  # noqa: B008 — FastAPI dependency injection
+) -> dict:
+    """Return the latest completed persisted run for the evaluation surface."""
+    del user
+    query = select(EvaluationRun).where(EvaluationRun.status == "completed")
+    if run_type:
+        query = query.where(EvaluationRun.run_type == run_type)
+    run = (await db.execute(query.order_by(EvaluationRun.completed_at.desc().nullslast(), EvaluationRun.created_at.desc()).limit(1))).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="evaluation run not found")
+    return await _evaluation_payload(run, db)
+
+
+@router.get("/runs/{evaluation_run_id}")
+async def get_evaluation_run(
+    evaluation_run_id: uuid.UUID,
+    user: User | None = Depends(get_current_user_optional),  # noqa: B008 — FastAPI dependency injection
+    db: AsyncSession = Depends(get_db),  # noqa: B008 — FastAPI dependency injection
+) -> dict:
+    """Return one persisted evaluation contract; no metric is recomputed in the route."""
+    del user
+    run = await db.get(EvaluationRun, evaluation_run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="evaluation run not found")
+    return await _evaluation_payload(run, db)

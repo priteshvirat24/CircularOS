@@ -11,11 +11,16 @@ import {
   ShieldAlert,
   Library,
   Scale,
-  BellRing
+  BellRing,
+  BarChart3,
+  Building2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useAuth } from '@/components/auth/AuthProvider';
 
 export function Sidebar() {
+  const { session, signOut } = useAuth();
+  const initials = session?.user.full_name.split(" ").map(part => part[0]).join("").slice(0, 2).toUpperCase() || "—";
   return (
     <aside className="w-[236px] bg-white border-r border-[var(--border-subtle)] h-screen fixed left-0 top-0 flex flex-col z-50">
       <div className="h-[64px] px-6 border-b border-[var(--border-subtle)] flex items-center space-x-3 shrink-0">
@@ -44,19 +49,21 @@ export function Sidebar() {
 
         <NavGroup title="INTELLIGENCE">
           <SidebarLink href="/agents" icon={<Cpu size={16} />} label="Agent Runs" />
+          <SidebarLink href="/evaluation" icon={<BarChart3 size={16} />} label="Evaluation" />
+          <SidebarLink href="/supervisory" icon={<Building2 size={16} />} label="Supervisory View" />
         </NavGroup>
       </div>
       
       <div className="p-4 border-t border-[var(--border-subtle)]">
-        <div className="flex items-center space-x-3 p-2 rounded-lg bg-[var(--surface-subtle)] border border-[var(--border-subtle)] transition-all hover:border-[var(--border-default)] hover:bg-[var(--surface-hover)] cursor-pointer">
+        <button onClick={signOut} title="Sign out" className="w-full flex items-center space-x-3 p-2 rounded-lg bg-[var(--surface-subtle)] border border-[var(--border-subtle)] transition-all hover:border-[var(--border-default)] hover:bg-[var(--surface-hover)] text-left">
           <div className="w-7 h-7 rounded-full bg-[var(--primary)] flex items-center justify-center text-white font-medium text-[11px] shadow-sm shrink-0">
-            JD
+            {initials}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-[13px] font-medium text-[var(--text-primary)] truncate">John Doe</p>
-            <p className="text-[11px] text-[var(--text-secondary)] truncate">Compliance Officer</p>
+            <p className="text-[13px] font-medium text-[var(--text-primary)] truncate">{session?.user.full_name}</p>
+            <p className="text-[11px] text-[var(--text-secondary)] truncate">{session?.organization?.name || "Authorized session"}</p>
           </div>
-        </div>
+        </button>
       </div>
     </aside>
   );

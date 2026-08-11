@@ -1,12 +1,13 @@
 import { Sidebar } from "@/components/ui/Sidebar";
 import { Topbar } from "@/components/ui/Topbar";
+import { AuthProvider } from "@/components/auth/AuthProvider";
 
 export default function AppLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  return (
+  return <AuthProvider>
     <div className="flex bg-[var(--background-secondary)] min-h-screen w-full">
       <Sidebar />
       <div className="flex-1 ml-[236px] flex flex-col min-h-screen">
@@ -18,5 +19,5 @@ export default function AppLayout({
         </main>
       </div>
     </div>
-  );
+  </AuthProvider>;
 }

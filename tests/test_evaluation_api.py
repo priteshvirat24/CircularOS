@@ -74,6 +74,18 @@ async def test_get_evaluation_run_returns_persisted_contract(client, app) -> Non
     assert payload["usage"]["total_tokens"] == 12
 
 
+async def test_get_latest_evaluation_run_can_filter_by_type(client, app) -> None:
+    await _seed_run()
+    app.dependency_overrides[get_current_user] = lambda: object()
+    try:
+        response = client.get("/api/v1/evaluation/runs/latest?run_type=obligation_extraction")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    assert response.status_code == 200
+    assert response.json()["run_type"] == "obligation_extraction"
+
+
 async def test_get_evaluation_run_404(client, app) -> None:
     app.dependency_overrides[get_current_user] = lambda: object()
     try:

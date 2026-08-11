@@ -28,6 +28,7 @@ from apps.api.routes import (
     audit,
     auth,
     controls,
+    dashboard,
     diff,
     documents,
     evaluation,
@@ -160,6 +161,7 @@ def create_app() -> FastAPI:
     # `controls` declare their own internal prefix, so they mount at the API
     # root; every other router receives its prefix here.
     app.include_router(health.router, prefix="/api/v1", tags=["health"])
+    app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["dashboard"])
     app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
     regulated_only = [Depends(deny_supervisory_raw_access)]
     app.include_router(

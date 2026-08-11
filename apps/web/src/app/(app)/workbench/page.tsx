@@ -1,176 +1,18 @@
 "use client";
 
-import React, { useState } from 'react';
-import { Card } from '@/components/ui/Card';
-import { Check, X, AlertTriangle, MessageSquare, Edit3 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { useEffect, useState } from "react";
+import { AlertTriangle, Check, X } from "lucide-react";
+import { Card } from "@/components/ui/Card";
+import { api, Obligation, Review } from "@/lib/api/client";
+import { DataState, useApiData } from "@/lib/api/useApiData";
+import { cn } from "@/lib/utils";
 
 export default function WorkbenchPage() {
-  const [activeTask, setActiveTask] = useState(0);
-
-  const tasks = [
-    {
-      id: 'TASK-8429',
-      docTitle: 'SEBI Guidelines on Anti-Money Laundering',
-      domain: 'SEBI',
-      urgency: 'High',
-      reason: 'Complex nested condition detected in clause 4.2(b)',
-      clauseText: 'Intermediaries shall ensure that records of all transactions are maintained and preserved for a period of five years from the date of transaction between the client and intermediary. However, in cases where the records relate to ongoing investigations, they must be retained until the investigation is concluded.',
-      extracted: {
-        actor: 'Intermediaries',
-        action: 'maintain and preserve records of all transactions',
-        object: 'transaction records',
-        deadline: 'five years from date of transaction',
-        exceptions: 'ongoing investigations require retention until conclusion',
-        risk: 'High'
-      }
-    },
-    {
-      id: 'TASK-8430',
-      docTitle: 'RBI Cyber Security Framework',
-      domain: 'RBI',
-      urgency: 'Critical',
-      reason: 'Low confidence score (0.42) on Actor extraction',
-      clauseText: 'The competent authority must report any cyber incident to CERT-In within 6 hours of noticing the incident.',
-      extracted: {
-        actor: 'competent authority',
-        action: 'report cyber incident',
-        object: 'CERT-In',
-        deadline: 'within 6 hours of noticing',
-        exceptions: 'None',
-        risk: 'Critical'
-      }
-    }
-  ];
-
-  const current = tasks[activeTask];
-
-  return (
-    <div className="space-y-6 pb-12 h-[calc(100vh-4rem)] flex flex-col">
-      <div className="flex justify-between items-end mb-4">
-        <div>
-          <h1 className="text-[32px] font-semibold tracking-tight text-[var(--text-primary)]">Review Workbench</h1>
-          <p className="text-[var(--text-secondary)] mt-1">Human-in-the-loop review queue for AI extractions</p>
-        </div>
-        <div className="flex items-center space-x-4">
-          <div className="text-right">
-            <p className="text-sm text-[var(--text-secondary)]">Queue Status</p>
-            <p className="text-[18px] font-semibold text-[var(--text-primary)]">2 Pending</p>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex flex-1 gap-6 min-h-0">
-        {/* Task List Sidebar */}
-        <div className="w-80 flex flex-col space-y-3 overflow-y-auto pr-2">
-          {tasks.map((task, idx) => (
-            <div 
-              key={task.id}
-              onClick={() => setActiveTask(idx)}
-              className={cn(
-                "p-4 rounded-xl border transition-all cursor-pointer",
-                activeTask === idx 
-                  ? "bg-[var(--surface-selected)] border-[var(--primary)] shadow-sm" 
-                  : "bg-white border-[var(--border-subtle)] hover:border-[var(--border-default)] hover:bg-[var(--surface-hover)]"
-              )}
-            >
-              <div className="flex justify-between items-start mb-2">
-                <span className="text-[12px] font-mono text-[var(--text-muted)]">{task.id}</span>
-                <span className={cn(
-                  "text-[10px] uppercase font-bold px-2 py-0.5 rounded",
-                  task.urgency === 'Critical' ? 'bg-[#FEF2F2] text-[#DC2626]' : 'bg-[#FFF7ED] text-[#EA580C]'
-                )}>
-                  {task.urgency}
-                </span>
-              </div>
-              <p className="text-[14px] font-medium text-[var(--text-primary)] line-clamp-2 mb-2">{task.docTitle}</p>
-              <div className="flex items-center text-[12px] text-[var(--text-secondary)] space-x-1">
-                <AlertTriangle size={14} className="text-[var(--warning)]" />
-                <span className="truncate">{task.reason}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Task Detail Main Area */}
-        <Card className="flex-1 flex flex-col shadow-sm border-[var(--border-default)]">
-          <div className="p-5 border-b border-[var(--border-subtle)] bg-white flex justify-between items-center rounded-t-2xl">
-            <div className="flex items-center space-x-3">
-              <span className="px-2 py-1 bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded text-[12px] font-medium text-[var(--text-primary)]">
-                {current.domain}
-              </span>
-              <h2 className="font-semibold text-[var(--text-primary)]">{current.docTitle}</h2>
-            </div>
-            <div className="text-[13px] font-mono text-[var(--text-muted)]">{current.id}</div>
-          </div>
-          
-          <div className="flex-1 overflow-y-auto p-6 space-y-8 bg-white">
-            {/* AI Reasoning Flag */}
-            <div className="p-4 bg-[#FFFBEB] border border-[#FDE68A] rounded-xl flex items-start space-x-3">
-              <AlertTriangle className="text-[#D97706] shrink-0 mt-0.5 w-5 h-5" />
-              <div>
-                <h4 className="text-[14px] font-semibold text-[#D97706]">AI Review Flag</h4>
-                <p className="text-[14px] text-[#92400E] mt-1">{current.reason}</p>
-              </div>
-            </div>
-
-            {/* Split View: Source vs Extraction */}
-            <div className="grid grid-cols-2 gap-8">
-              {/* Source Text */}
-              <div className="space-y-4">
-                <h3 className="text-[12px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider">Source Clause</h3>
-                <div className="p-5 bg-[var(--surface-subtle)] rounded-xl border border-[var(--border-subtle)] text-[15px] leading-relaxed text-[var(--text-primary)] font-serif">
-                  {current.clauseText}
-                </div>
-              </div>
-
-              {/* Extracted Data */}
-              <div className="space-y-4">
-                <h3 className="text-[12px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider flex items-center justify-between">
-                  <span>Extracted Obligation</span>
-                  <button className="text-[var(--primary)] hover:text-[var(--primary-hover)] flex items-center text-[13px] space-x-1 font-medium">
-                    <Edit3 size={14} />
-                    <span>Edit</span>
-                  </button>
-                </h3>
-                <div className="space-y-3">
-                  {Object.entries(current.extracted).map(([key, value]) => (
-                    <div key={key} className="p-4 bg-white border border-[var(--border-default)] rounded-xl flex flex-col">
-                      <span className="text-[11px] uppercase text-[var(--text-muted)] font-semibold mb-1">{key}</span>
-                      <span className={cn(
-                        "text-[14px]",
-                        key === 'risk' && value === 'Critical' ? 'text-[var(--danger)] font-semibold' :
-                        key === 'risk' && value === 'High' ? 'text-[#EA580C] font-semibold' :
-                        'text-[var(--text-primary)] font-medium'
-                      )}>
-                        {value}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Action Footer */}
-          <div className="p-5 border-t border-[var(--border-subtle)] bg-[var(--surface-subtle)] flex justify-between items-center rounded-b-2xl">
-            <button className="flex items-center space-x-2 px-4 py-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border-subtle)] rounded-lg transition-colors text-sm font-medium">
-              <MessageSquare size={18} />
-              <span>Add Comment</span>
-            </button>
-            <div className="flex items-center space-x-3">
-              <button className="flex items-center space-x-2 px-5 py-2 bg-white text-[var(--danger)] border border-[#FECACA] hover:bg-[#FEF2F2] rounded-lg transition-colors text-sm font-medium shadow-sm">
-                <X size={18} />
-                <span>Reject</span>
-              </button>
-              <button className="flex items-center space-x-2 px-6 py-2 bg-[var(--success)] text-white hover:bg-[#059669] rounded-lg transition-colors text-sm font-medium shadow-sm">
-                <Check size={18} />
-                <span>Approve Extraction</span>
-              </button>
-            </div>
-          </div>
-        </Card>
-      </div>
-    </div>
-  );
+  const { data, loading, error, reload } = useApiData(api.reviews);
+  const [active, setActive] = useState<Review | null>(null);
+  const [obligation, setObligation] = useState<Obligation | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  useEffect(() => { if (!active?.obligation_id) { setObligation(null); return; } void api.obligation(active.obligation_id).then(setObligation).catch(cause => setActionError(cause instanceof Error ? cause.message : "Unable to load obligation")); }, [active]);
+  const decide = async (action: "approve" | "reject") => { if (!active) return; setActionError(null); try { await api.decideReview(active.id, action); setActive(null); setObligation(null); await reload(); } catch (cause) { setActionError(cause instanceof Error ? cause.message : "Unable to record review decision"); } };
+  return <div className="space-y-6 pb-12 h-[calc(100vh-4rem)] flex flex-col"><div className="flex justify-between items-end"><div><h1 className="text-[32px] font-semibold tracking-tight">Review Workbench</h1><p className="text-[var(--text-secondary)] mt-1">Live human review tasks with persisted verification evidence</p></div><p className="text-sm text-[var(--text-secondary)]">{data?.total ?? "—"} pending</p></div><DataState loading={loading} error={error} empty={!data || data.reviews.length === 0}><div className="flex flex-1 gap-6 min-h-0"><div className="w-80 space-y-3 overflow-y-auto pr-2">{data?.reviews.map(review => <button key={review.id} onClick={() => setActive(review)} className={cn("w-full text-left p-4 rounded-xl border", active?.id === review.id ? "bg-[var(--surface-selected)] border-[var(--primary)]" : "bg-white hover:bg-[var(--surface-hover)]")}><div className="flex justify-between"><span className="font-mono text-xs">{review.id.slice(0, 13)}</span><span className="text-[10px] uppercase font-bold">{review.priority}</span></div><p className="text-sm font-medium mt-3">{review.task_type.replaceAll("_", " ")}</p><p className="text-xs text-[var(--text-secondary)] mt-2">{String(review.context?.route || "Verification review")}</p></button>)}</div><Card className="flex-1 flex flex-col overflow-hidden">{active ? <><div className="p-5 border-b bg-white"><h2 className="font-semibold">{active.task_type.replaceAll("_", " ")}</h2><p className="font-mono text-xs text-[var(--text-muted)] mt-1">{active.id}</p></div><div className="flex-1 overflow-y-auto p-6 space-y-6 bg-white">{obligation ? <><section><p className="text-xs uppercase font-bold text-[var(--text-muted)]">Source</p><p className="mt-2 p-4 bg-[var(--surface-subtle)] border rounded-xl text-sm leading-relaxed">{obligation.source_text || "Source is unavailable"}</p></section><section><p className="text-xs uppercase font-bold text-[var(--text-muted)]">Extracted obligation</p><p className="mt-2 text-sm font-medium">{obligation.normalized_obligation}</p><div className="grid grid-cols-2 gap-3 mt-4 text-sm"><p>Actor: {obligation.actor || "—"}</p><p>Action: {obligation.action || "—"}</p><p>Entailment: {obligation.verification.entailment.thresholded || "—"}</p><p>Route: {obligation.verification.route || "—"}</p></div></section><section className="p-4 bg-[#FFFBEB] border border-[#FDE68A] rounded-xl text-sm"><AlertTriangle className="inline w-4 h-4 mr-2 text-[#D97706]" />{obligation.verification.critic?.objection || "No substantive critic objection recorded."}</section></> : <p className="text-sm text-[var(--text-secondary)]">Loading review evidence…</p>}</div><div className="p-5 border-t bg-[var(--surface-subtle)] flex justify-end gap-3"><button onClick={() => void decide("reject")} className="px-5 py-2 bg-white text-[var(--danger)] border rounded-lg text-sm font-medium"><X className="inline w-4 h-4 mr-1" />Reject</button><button onClick={() => void decide("approve")} className="px-5 py-2 bg-[var(--success)] text-white rounded-lg text-sm font-medium"><Check className="inline w-4 h-4 mr-1" />Approve</button></div></> : <div className="m-auto text-sm text-[var(--text-secondary)]">Select a live review task.</div>}</Card></div>{actionError && <p className="text-sm text-[var(--danger)]">{actionError}</p>}</DataState></div>;
 }
