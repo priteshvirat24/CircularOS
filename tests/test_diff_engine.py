@@ -117,6 +117,7 @@ def test_real_pair_meets_goldset_exit_gate():
     """
     import json
     import os
+    from pathlib import Path
 
     import pytest
 
@@ -138,7 +139,8 @@ def test_real_pair_meets_goldset_exit_gate():
 
     new_text = ft(jun)
     res = run_diff_pipeline(ft(aug), new_text)
-    gold = [json.loads(ln) for ln in open(changeset) if ln.strip()]
+    with Path(changeset).open() as gold_file:
+        gold = [json.loads(line) for line in gold_file if line.strip()]
     m = evaluate_against_changeset(res, gold, new_text)
 
     assert m["created_detected"] == m["gold"]["created"], m["created_missed"]
@@ -205,6 +207,28 @@ def test_cosmetic_section_not_flipped_by_asymmetric_obligation_counts():
     new_o = [ObligationFields(normalized_obligation="qsb duty one")]  # only one extracted
     row = diff_pair(old_sec, new_sec, 1.0, old_obls=old_o, new_obls=new_o)
     assert row is None  # not flipped by the count asymmetry
+
+
+def test_stable_renumbering_not_flipped_by_model_field_noise():
+    """Comparable extraction alone cannot override stable source text on a renumber-only pair."""
+    from packages.diff_engine.obligation_diff import diff_pair
+    from packages.diff_engine.types import SectionUnit
+    from packages.policy_engine.changes import ObligationFields
+
+    old_sec = SectionUnit(
+        number=50,
+        title="Electronic Contract Note",
+        body="Brokers shall issue electronic contract notes to clients.",
+    )
+    new_sec = SectionUnit(
+        number=51,
+        title="Electronic Contract Note",
+        body="Brokers shall issue electronic contract notes to clients.",
+    )
+    old_o = [ObligationFields(normalized_obligation="issue notes", deadline="T+1")]
+    new_o = [ObligationFields(normalized_obligation="issue notes", deadline="T+0")]
+
+    assert diff_pair(old_sec, new_sec, 1.0, old_obls=old_o, new_obls=new_o) is None
 
 
 def test_embedding_backend_degrades_gracefully():

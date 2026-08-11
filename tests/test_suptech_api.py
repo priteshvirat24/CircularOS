@@ -14,7 +14,7 @@ from starlette.testclient import TestClient
 from apps.api.database import async_session_maker
 from apps.api.services import create_access_token
 from packages.regulatory_core.models.auth import Organization, User, UserRole
-from packages.regulatory_core.models.compliance import Control
+from packages.regulatory_core.models.compliance import Control, EvidenceStatus
 from packages.regulatory_core.models.documents import (
     Clause,
     DocumentStatus,
@@ -30,7 +30,12 @@ from packages.regulatory_core.models.obligations import (
     RegulatoryChange,
     RiskLevel,
 )
-from scripts.build_tenant_a_controls import CONTROL_CATALOG, build_tenant_a_layer
+from scripts.build_tenant_a_controls import (
+    CONTROL_CATALOG,
+    build_tenant_a_layer,
+    calculate_freshness,
+    plan_control_freshness,
+)
 from scripts.seed_suptech import seed_suptech
 
 
@@ -40,6 +45,9 @@ class SupTechFixture:
     circular_id: uuid.UUID
     private_document_id: uuid.UUID
     private_control_id: uuid.UUID
+
+
+_CONTROL_OBLIGATION_COUNTS = (3, 3, 1, 1, 1, 2, 1, 4, 2, 2, 3, 3, 3, 2, 2)
 
 
 async def _count_seed_rows() -> tuple[int, ...]:
@@ -99,8 +107,7 @@ async def _prepare_suptech_fixture() -> SupTechFixture:
         db.add(clause)
         await db.flush()
         obligation_texts: list[str] = []
-        expected_counts = (3, 3, 1, 1, 1, 2, 1, 4, 2, 2, 3, 3, 3, 2, 2)
-        for spec, count in zip(CONTROL_CATALOG, expected_counts, strict=True):
+        for spec, count in zip(CONTROL_CATALOG, _CONTROL_OBLIGATION_COUNTS, strict=True):
             for index in range(count):
                 obligation_texts.append(f"{spec.match_any[index % len(spec.match_any)]} fixture")
         obligation_texts.extend(f"unmapped real fixture duty {index}" for index in range(12))
@@ -268,15 +275,33 @@ def test_posture_is_live_labelled_and_aggregate_only(
     assert payload["market_rollup"]["seeded_intermediaries"] == 2
     by_name = {item["name"]: item for item in payload["intermediaries"]}
     assert by_name["Tenant A — Real Registry"]["seeded"] is False
-    assert by_name["Tenant A — Real Registry"]["coverage"]["percentage"] == 62.22
-    assert by_name["Tenant A — Real Registry"]["evidence_freshness"] == {
-        "valid": 28,
-        "stale": 4,
-        "missing": 13,
-    }
-    assert by_name["Tenant A — Real Registry"]["open_gaps"]["total"] == 17
-    assert by_name["Tenant B — Well Implemented (Seeded)"]["coverage"]["percentage"] == 88.89
-    assert by_name["Tenant C — Laggard (Seeded)"]["coverage"]["percentage"] == 22.22
+    as_of = date.fromisoformat(payload["as_of"])
+    expected_freshness = {"valid": 0, "stale": 0, "missing": 12}
+    for spec, count in zip(CONTROL_CATALOG, _CONTROL_OBLIGATION_COUNTS, strict=True):
+        seeded_freshness = plan_control_freshness(spec, date(2026, 8, 9))
+        if seeded_freshness is None:
+            expected_freshness["missing"] += count
+            continue
+        current_freshness = calculate_freshness(
+            seeded_freshness.collection_date,
+            spec.frequency_days,
+            as_of,
+        )
+        if current_freshness.status == EvidenceStatus.VALID:
+            expected_freshness["valid"] += count
+        else:
+            expected_freshness["stale"] += count
+    real_posture = by_name["Tenant A — Real Registry"]
+    assert real_posture["evidence_freshness"] == expected_freshness
+    assert real_posture["coverage"]["percentage"] == round(
+        expected_freshness["valid"] / 45 * 100,
+        2,
+    )
+    assert real_posture["open_gaps"]["total"] == (
+        expected_freshness["stale"] + expected_freshness["missing"]
+    )
+    assert by_name["Tenant B — Well Implemented (Seeded)"]["coverage"]["percentage"] == 66.67
+    assert by_name["Tenant C — Laggard (Seeded)"]["coverage"]["percentage"] == 11.11
     _assert_aggregate_only(payload)
 
 

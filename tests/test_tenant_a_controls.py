@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections import Counter
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -53,7 +53,12 @@ def test_freshness_is_computed_from_dates_and_frequency() -> None:
     by_key = {item.key: item for item in CONTROL_CATALOG}
     account = plan_control_freshness(by_key["account_nomenclature"], as_of)
     dossier = plan_control_freshness(by_key["registration_dossier"], as_of)
-    assert account is not None and account.status == EvidenceStatus.STALE
+    assert account is not None
+    assert account.collection_date == date(2026, 3, 24)
+    assert account.valid_until == account.collection_date + timedelta(days=92)
+    assert account.valid_until == date(2026, 6, 24)
+    assert account.valid_until < as_of
+    assert account.status == EvidenceStatus.STALE
     assert dossier is None
 
 

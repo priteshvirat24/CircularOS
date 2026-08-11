@@ -5,7 +5,7 @@ HONESTY AUDIT TRAIL
 ===================
 REAL:
 * Tenant A is an already-existing stock-broker organization. Its applicable population is the
-  real, stored August-2024 stockbroker registry (45 obligations in the demo database), including
+  real, stored active August-2024 stockbroker registry, including
   its real verification verdicts. This script does not create or improve Tenant A controls,
   evidence, gaps, or adoption state.
 * The latest-circular targets come from the latest completed real Aug-2024 -> Jun-2025 diff run.
@@ -13,12 +13,10 @@ REAL:
   section changes at §17, §71, §72, and §88. The LOW §31 -> §32 terminology cleanup is excluded.
 
 SEEDED (always surfaced as ``seeded: true`` by the API):
-* Tenant B references the same real 45-obligation registry. It receives a deliberately seeded
-  well-implemented posture: controls on 45, valid evidence on 40, stale evidence on 3, missing
-  evidence on 2, and all four latest-circular changes operationalized.
-* Tenant C references the same real registry. It receives a deliberately seeded laggard posture:
-  controls on 30, valid evidence on 10, stale evidence on 12, missing evidence on 23, and only
-  one of the four latest-circular changes operationalized.
+* Tenant B references the same real active registry. It receives a deliberately seeded
+  well-implemented posture and all four latest-circular changes operationalized.
+* Tenant C references the same real registry. It receives a deliberately seeded laggard posture
+  with only one of the four latest-circular changes operationalized.
 * Seed evidence files are metadata-only markers; no fabricated regulatory document or second
   corpus is created. Phase 7 replaces B/C with onboarded intermediaries without aggregation-code
   changes.
@@ -447,7 +445,7 @@ async def seed_suptech(
     real_org_id: uuid.UUID | None = None,
     registry_document_id: uuid.UUID | None = None,
     circular_id: uuid.UUID | None = None,
-    expected_registry_count: int | None = 45,
+    expected_registry_count: int | None = None,
 ) -> SeedReport:
     """Create or reconcile the labelled three-intermediary supervisory population."""
     if len(supervisor_password) < 12:
@@ -507,18 +505,19 @@ async def seed_suptech(
         display_name="Tenant C — Laggard (Seeded)",
     )
 
+    n = len(obligation_ids)
     for organization, control_count, valid_count, stale_count in (
         (
             tenant_b,
-            min(45, len(obligation_ids)),
-            min(40, len(obligation_ids)),
-            min(3, max(0, len(obligation_ids) - 40)),
+            min(int(n * 0.75), n),
+            min(int(n * 0.67), n),
+            min(int(n * 0.05), max(0, n - int(n * 0.67))),
         ),
         (
             tenant_c,
-            min(30, len(obligation_ids)),
-            min(10, len(obligation_ids)),
-            min(12, max(0, len(obligation_ids) - 10)),
+            min(int(n * 0.35), n),
+            min(int(n * 0.12), n),
+            min(int(n * 0.15), max(0, n - int(n * 0.12))),
         ),
     ):
         control = await _upsert_control(db, created, organization)
@@ -560,7 +559,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--real-org-id", type=uuid.UUID)
     parser.add_argument("--registry-document-id", type=uuid.UUID)
     parser.add_argument("--circular-id", type=uuid.UUID)
-    parser.add_argument("--expected-registry-count", type=int, default=45)
+    parser.add_argument("--expected-registry-count", type=int, default=None)
     return parser.parse_args()
 
 

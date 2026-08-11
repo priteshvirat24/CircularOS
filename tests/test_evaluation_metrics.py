@@ -6,6 +6,7 @@ from packages.evaluation.matching import (
     EvaluationObligation,
     MatcherConfig,
     match_obligations,
+    match_obligations_coverage,
     spans_overlap,
 )
 from packages.evaluation.metrics import field_accuracy, precision_recall_f1
@@ -80,6 +81,63 @@ def test_matching_is_one_to_one_and_deterministic() -> None:
         ("p1", "g1")
     ]
     assert outcome.unmatched_gold_indices == (1,)
+
+
+def test_coverage_matcher_one_gold_three_predictions() -> None:
+    """1 gold annotation matched by 3 predictions → 1 TP, 0 FP, 0 FN."""
+    gold = [
+        item("g1", "Stock Broker", "maintain records", "Broker must maintain records", (0, 50)),
+    ]
+    predictions = [
+        item("p1", "Stock Broker", "maintain records", "Broker shall maintain transaction records", (5, 45)),
+        item("p2", "Stock Broker", "maintain records", "Broker shall maintain client records", (10, 40)),
+        item("p3", "Stock Broker", "maintain records", "Broker must maintain records of orders", (0, 35)),
+    ]
+    config = MatcherConfig(obligation_similarity_threshold=0.50)
+    outcome = match_obligations_coverage(predictions, gold, config)
+
+    assert len(outcome.covered_gold_indices) == 1
+    assert len(outcome.uncovered_gold_indices) == 0
+    assert len(outcome.absorbed_prediction_indices) == 3
+    assert len(outcome.unmatched_prediction_indices) == 0
+    tp = len(outcome.covered_gold_indices)
+    fp = len(outcome.unmatched_prediction_indices)
+    fn = len(outcome.uncovered_gold_indices)
+    assert tp == 1
+    assert fp == 0
+    assert fn == 0
+    assert outcome.granularity_ratio == 3.0
+    assert len(outcome.primary_pairs) == 1
+
+
+def test_coverage_matcher_mixed_case() -> None:
+    """2 gold, 5 predictions: 1 gold matched by 3, 1 gold unmatched, 2 predictions unmatched."""
+    gold = [
+        item("g1", "Stock Broker", "maintain records", "Broker must maintain records", (0, 50)),
+        item("g2", "Auditor", "conduct audit", "Auditor must conduct internal audit", (100, 150)),
+    ]
+    predictions = [
+        item("p1", "Stock Broker", "maintain records", "Broker shall maintain transaction records", (5, 45)),
+        item("p2", "Stock Broker", "maintain records", "Broker shall maintain client records", (10, 40)),
+        item("p3", "Stock Broker", "maintain records", "Broker must maintain records of orders", (0, 35)),
+        item("p4", "Exchange", "publish notice", "Exchange shall publish compliance notice", (60, 90)),
+        item("p5", "Depository", "submit report", "Depository shall submit annual report", (200, 250)),
+    ]
+    config = MatcherConfig(obligation_similarity_threshold=0.50)
+    outcome = match_obligations_coverage(predictions, gold, config)
+
+    assert len(outcome.covered_gold_indices) == 1
+    assert len(outcome.uncovered_gold_indices) == 1
+    assert 1 in outcome.uncovered_gold_indices
+    assert len(outcome.absorbed_prediction_indices) == 3
+    assert len(outcome.unmatched_prediction_indices) == 2
+    tp = len(outcome.covered_gold_indices)
+    fp = len(outcome.unmatched_prediction_indices)
+    fn = len(outcome.uncovered_gold_indices)
+    assert tp == 1
+    assert fp == 2
+    assert fn == 1
+    assert outcome.granularity_ratio == 3.0
 
 
 def test_field_accuracy_known_answer_and_missing_values() -> None:

@@ -7,27 +7,27 @@ Validates required settings on startup and reports unconfigured integrations.
 from __future__ import annotations
 
 import secrets
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Environment(str, Enum):
+class Environment(StrEnum):
     DEVELOPMENT = "development"
     STAGING = "staging"
     PRODUCTION = "production"
 
 
-class LLMProvider(str, Enum):
+class LLMProvider(StrEnum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GEMINI = "gemini"
     GROQ = "groq"
+    MISTRAL = "mistral"
 
 
-class EmbeddingProvider(str, Enum):
+class EmbeddingProvider(StrEnum):
     OPENAI = "openai"
     GEMINI = "gemini"
 
@@ -82,66 +82,69 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     # ── LLM Providers ────────────────────────────
-    openai_api_key: Optional[str] = None
+    openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o"
 
-    anthropic_api_key: Optional[str] = None
+    anthropic_api_key: str | None = None
     anthropic_model: str = "claude-sonnet-4-20250514"
 
-    gemini_api_key: Optional[str] = None
+    gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.5-flash"
 
     # Gemini key rotation: each key from a different GCP project multiplies
     # free-tier RPD (250/day per project on 2.5 Flash). Fill as many as you have.
-    gemini_api_key_2: Optional[str] = None
-    gemini_api_key_3: Optional[str] = None
-    gemini_api_key_4: Optional[str] = None
-    gemini_api_key_5: Optional[str] = None
-    gemini_api_key_6: Optional[str] = None
-    gemini_api_key_7: Optional[str] = None
-    gemini_api_key_8: Optional[str] = None
-    gemini_api_key_9: Optional[str] = None
-    gemini_api_key_10: Optional[str] = None
+    gemini_api_key_2: str | None = None
+    gemini_api_key_3: str | None = None
+    gemini_api_key_4: str | None = None
+    gemini_api_key_5: str | None = None
+    gemini_api_key_6: str | None = None
+    gemini_api_key_7: str | None = None
+    gemini_api_key_8: str | None = None
+    gemini_api_key_9: str | None = None
+    gemini_api_key_10: str | None = None
 
     # Groq: free tier, no credit card, OpenAI-compatible endpoint.
-    # Different model family from Gemini = genuine second opinion for critic.
-    groq_api_key: Optional[str] = None
+    # Different model family from Mistral = genuine second opinion for critic.
+    groq_api_key: str | None = None
+
+    # Mistral La Plateforme: OpenAI-compatible API used for full-corpus extraction.
+    mistral_api_key: str | None = None
 
     # ── Model Routing ────────────────────────────
-    fast_model_provider: Optional[str] = None
-    fast_model_name: Optional[str] = None
+    fast_model_provider: str | None = None
+    fast_model_name: str | None = None
 
-    reasoning_model_provider: Optional[str] = None
-    reasoning_model_name: Optional[str] = None
+    reasoning_model_provider: str | None = None
+    reasoning_model_name: str | None = None
 
-    critic_model_provider: Optional[str] = None
-    critic_model_name: Optional[str] = None
+    critic_model_provider: str | None = None
+    critic_model_name: str | None = None
 
     # ── Embedding ────────────────────────────────
-    embedding_provider: Optional[str] = None
-    embedding_model: Optional[str] = None
+    embedding_provider: str | None = None
+    embedding_model: str | None = None
     embedding_dimensions: int = 1536
 
     # ── Reranker ─────────────────────────────────
-    reranker_provider: Optional[str] = None
-    reranker_model: Optional[str] = None
+    reranker_provider: str | None = None
+    reranker_model: str | None = None
 
     # ── Observability ────────────────────────────
-    langfuse_public_key: Optional[str] = None
-    langfuse_secret_key: Optional[str] = None
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
     langfuse_host: str = "https://cloud.langfuse.com"
 
-    otel_exporter_otlp_endpoint: Optional[str] = None
+    otel_exporter_otlp_endpoint: str | None = None
     otel_service_name: str = "circularos"
 
     log_level: str = "INFO"
     log_format: str = "json"
 
     # ── Knowledge Graph ──────────────────────────
-    neo4j_uri: Optional[str] = None
-    neo4j_username: Optional[str] = None
-    neo4j_password: Optional[str] = None
+    neo4j_uri: str | None = None
+    neo4j_username: str | None = None
+    neo4j_password: str | None = None
 
     # ── External Sources ─────────────────────────
     sebi_source_base_url: str = "https://www.sebi.gov.in"
@@ -187,11 +190,15 @@ class Settings(BaseSettings):
             },
             "openai": {
                 "configured": bool(self.openai_api_key),
-                "status": "configured" if self.openai_api_key else "unconfigured - set OPENAI_API_KEY",
+                "status": "configured"
+                if self.openai_api_key
+                else "unconfigured - set OPENAI_API_KEY",
             },
             "anthropic": {
                 "configured": bool(self.anthropic_api_key),
-                "status": "configured" if self.anthropic_api_key else "unconfigured - set ANTHROPIC_API_KEY",
+                "status": "configured"
+                if self.anthropic_api_key
+                else "unconfigured - set ANTHROPIC_API_KEY",
             },
             "gemini": {
                 "configured": gemini_configured,
@@ -200,6 +207,12 @@ class Settings(BaseSettings):
             "groq": {
                 "configured": bool(self.groq_api_key),
                 "status": "configured" if self.groq_api_key else "unconfigured - set GROQ_API_KEY",
+            },
+            "mistral": {
+                "configured": bool(self.mistral_api_key),
+                "status": (
+                    "configured" if self.mistral_api_key else "unconfigured - set MISTRAL_API_KEY"
+                ),
             },
             "embedding": {
                 "configured": bool(self.embedding_provider and self.embedding_model),
@@ -232,6 +245,7 @@ class Settings(BaseSettings):
     def validate_jwt_secret(cls, v: str) -> str:
         if v == "CHANGE_ME_TO_A_RANDOM_64_CHAR_SECRET":
             import warnings
+
             warnings.warn(
                 "JWT_SECRET is using default value. Set a secure random value in production.",
                 UserWarning,

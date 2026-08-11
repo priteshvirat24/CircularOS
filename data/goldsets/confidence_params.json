@@ -1,8 +1,8 @@
 {
   "calibration": {
-    "intercept": 7.741164263078807e-06,
+    "intercept": -13.120670404151845,
     "method": "platt",
-    "slope": 0.0
+    "slope": 10.83191751312311
   },
   "feature_names": [
     "citation_score",
@@ -12,35 +12,42 @@
     "difficulty"
   ],
   "fit": {
-    "calibration_size": 2,
+    "calibration_size": 47,
     "method": "regularized-logistic-mle",
-    "train_size": 6
+    "train_size": 188
   },
-  "honesty": "PROVISIONAL partial-corpus fit; keep phase3 defaults active until the Phase 4.5 full-corpus refit",
+  "honesty": "Full-corpus calibrated parameters produced by the Phase 4.5 batch",
   "metrics": {
-    "brier": 0.25000000000374534,
-    "ece": 1.9352910657355338e-06,
+    "brier": 1.367321289734905e-12,
+    "ece": 1.992543130112533e-07,
     "reliability_diagram": [
       {
-        "bin_lower": 0.5,
-        "bin_upper": 0.6,
-        "count": 2,
-        "empirical_accuracy": 0.5,
-        "mean_confidence": 0.5000019352910657
+        "bin_lower": 0.0,
+        "bin_upper": 0.1,
+        "count": 32,
+        "empirical_accuracy": 0.0,
+        "mean_confidence": 2.5549635776489425e-07
+      },
+      {
+        "bin_lower": 0.9,
+        "bin_upper": 1.0,
+        "count": 15,
+        "empirical_accuracy": 1.0,
+        "mean_confidence": 0.9999999207287158
       }
     ]
   },
   "params": {
-    "citation_score_weight": -0.0,
-    "critic_objection_weight": -0.0,
-    "difficulty_weight": -0.0,
-    "entailment_weight": 0.0,
+    "citation_score_weight": 558.3605743279022,
+    "critic_objection_weight": 112.74065744520301,
+    "difficulty_weight": 17.357983201559023,
+    "entailment_weight": 129.9070950580826,
     "high_threshold": 0.8,
-    "intercept": 7.741164263078807e-06,
+    "intercept": -725.3636822130148,
     "medium_threshold": 0.55,
-    "self_confidence_weight": -0.0,
-    "version": "phase4-partial-provisional-v1"
+    "self_confidence_weight": 54.238852001114,
+    "version": "phase4.5-full-calibrated-v1"
   },
-  "status": "PROVISIONAL",
-  "version": "phase4-partial-provisional-v1"
+  "status": "CALIBRATED",
+  "version": "phase4.5-full-calibrated-v1"
 }

@@ -78,15 +78,26 @@ async def _load_obligation_map(
     which is robust to the parser's lossy clause numbering. Empty when nothing is extracted yet.
     """
     obls = (
-        await db.execute(select(Obligation).where(Obligation.document_id == document_id))
-    ).scalars().all()
+        (
+            await db.execute(
+                select(Obligation).where(
+                    Obligation.document_id == document_id,
+                    Obligation.is_deleted.is_(False),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     if not obls:
         return {}
     sections = extract_sections(doc_text, max_body_chars=20000)
     items: list[tuple[str, object]] = [(o.source_text or "", _obligation_fields(o)) for o in obls]
     raw = assign_to_sections(sections, items)
-    return {num: [x for x in payloads if isinstance(x, ObligationFields)]
-            for num, payloads in raw.items()}
+    return {
+        num: [x for x in payloads if isinstance(x, ObligationFields)]
+        for num, payloads in raw.items()
+    }
 
 
 def change_row_to_model(
@@ -157,7 +168,8 @@ async def run_diff_async(
             new_obl_map = await _load_obligation_map(db, new_id, new_text)
 
             result: DiffResult = run_diff_pipeline(
-                old_text, new_text,
+                old_text,
+                new_text,
                 old_obligations=old_obl_map,
                 new_obligations=new_obl_map,
             )

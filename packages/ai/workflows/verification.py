@@ -17,9 +17,17 @@ from langchain_core.callbacks import UsageMetadataCallbackHandler
 
 from packages.ai.prompts import get_prompt
 from packages.ai.providers import get_structured_llm
-from packages.ai.schemas import CriticAssessment, EntailmentAssessment
+from packages.ai.schemas import (
+    CriticAssessment,
+    EntailmentAssessment,
+    VerificationBatchResult,
+)
 from packages.evaluation.calibration import load_confidence_params
-from packages.policy_engine.citations import CitationVerdict, verify_citation
+from packages.policy_engine.citations import (
+    CitationVerdict,
+    find_citation_span_fast,
+    verify_citation,
+)
 from packages.policy_engine.confidence import (
     ConfidenceBand,
     ConfidenceParams,
@@ -94,6 +102,18 @@ class InvocationUsage:
 
 
 EMPTY_INVOCATION_USAGE = InvocationUsage()
+
+VERIFICATION_MAX_OUTPUT_TOKENS = 1024
+VERIFICATION_MAX_BATCH_CANDIDATES = 20
+VERIFICATION_MAX_BATCH_PAYLOAD_CHARS = 14_000
+
+
+@dataclass(frozen=True)
+class VerificationBatchOutcome:
+    """Per-obligation outcomes plus the single provider-reported batch usage record."""
+
+    outcomes: tuple[VerificationOutcome, ...]
+    usage: InvocationUsage
 
 
 @dataclass(frozen=True)
@@ -245,6 +265,169 @@ def run_verification(candidate: VerificationCandidate) -> VerificationOutcome:
         entailment_usage=_usage(entailment_callback),
         critic_usage=_usage(critic_callback),
     )
+
+
+def _citation_context(candidate: VerificationCandidate, radius: int = 0) -> str:
+    """Return compact source windows around cited quotes without repeating a whole PDF chunk."""
+    windows: list[tuple[int, int]] = []
+    for citation in candidate.citations:
+        # Reuse the deterministic verifier's source offsets. PDF whitespace and punctuation
+        # normalization often make ``str.find`` fail even though the citation is valid; the old
+        # behavior then sent an unrelated 1,500-character chunk prefix to the critic.
+        span = find_citation_span_fast(citation.quote, candidate.source_text)
+        if span is None:
+            continue
+        start, end = span
+        windows.append(
+            (max(0, start - radius), min(len(candidate.source_text), end + radius))
+        )
+    if not windows:
+        # Citation failure is a non-overridable deterministic rejection. Keep a small, genuine
+        # source sample so the bounded model nodes still run without wasting the free-tier budget.
+        return candidate.source_text[: min(len(candidate.source_text), 500)]
+    windows.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in windows:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return "\n…\n".join(candidate.source_text[start:end] for start, end in merged)
+
+
+def _batch_payload(candidate: VerificationCandidate, alias: str = "0") -> dict[str, Any]:
+    return {
+        "i": alias,
+        "s": _citation_context(candidate),
+        "c": candidate.normalized_obligation,
+        "q": {
+            key: value
+            for key, value in {
+                "cnd": candidate.conditions,
+                "exc": candidate.exceptions,
+                "freq": candidate.frequency,
+                "due": candidate.deadline_description,
+            }.items()
+            if value
+        },
+    }
+
+
+def split_verification_batches(
+    candidates: list[VerificationCandidate],
+) -> list[list[VerificationCandidate]]:
+    """Greedily bound both rows and serialized payload for Groq free-tier TPM safety."""
+    batches: list[list[VerificationCandidate]] = []
+    current: list[VerificationCandidate] = []
+    current_chars = 0
+    for candidate in candidates:
+        candidate_chars = len(
+            json.dumps(_batch_payload(candidate), ensure_ascii=False, sort_keys=True)
+        )
+        if current and (
+            len(current) >= VERIFICATION_MAX_BATCH_CANDIDATES
+            or current_chars + candidate_chars > VERIFICATION_MAX_BATCH_PAYLOAD_CHARS
+        ):
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(candidate)
+        current_chars += candidate_chars
+    if current:
+        batches.append(current)
+    return batches
+
+
+def run_verification_batch(
+    candidates: tuple[VerificationCandidate, ...],
+) -> VerificationBatchOutcome:
+    """Get both Groq signals once for a bounded batch, then apply every deterministic node."""
+    if not candidates:
+        raise ValueError("verification batch cannot be empty")
+    candidate_ids = [candidate.obligation_id for candidate in candidates]
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise ValueError("verification batch obligation IDs must be unique")
+    alias_to_candidate = {str(index): candidate for index, candidate in enumerate(candidates)}
+    payload = [
+        _batch_payload(candidate, alias)
+        for alias, candidate in alias_to_candidate.items()
+    ]
+    prompt = get_prompt("verification_batch_critic")
+    # Groq counts the requested completion allowance toward TPM. Its OpenAI-compatible
+    # default is 4,096 tokens, which can make an otherwise small batch exceed the free
+    # Llama model's 6,000-TPM ceiling before inference starts. Compact 20-row production
+    # responses stay below 1,024 tokens, so bind that explicit cap.
+    llm = get_structured_llm(
+        VerificationBatchResult,
+        routing_type="critic",
+        max_tokens=VERIFICATION_MAX_OUTPUT_TOKENS,
+    )
+    messages = prompt.format_messages(
+        candidate_batch_json=json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    )
+    callbacks: list[UsageMetadataCallbackHandler] = []
+    errors: list[str] = []
+    by_id = {}
+    for attempt in range(1, 4):
+        callback = UsageMetadataCallbackHandler()
+        callbacks.append(callback)
+        try:
+            result = cast(
+                VerificationBatchResult,
+                _invoke_with_free_tier_backoff(llm, messages, callback),
+            )
+            by_id = {assessment.obligation_id: assessment for assessment in result.assessments}
+            if len(by_id) != len(result.assessments) or set(by_id) != set(alias_to_candidate):
+                raise RuntimeError(
+                    "response aliases did not exactly match requested candidate aliases"
+                )
+            break
+        except Exception as exc:
+            errors.append(f"attempt {attempt}: {type(exc).__name__}: {exc}")
+            if attempt == 3:
+                raise RuntimeError(
+                    "Groq batch failed structured-output validation three times: "
+                    + " | ".join(errors)
+                ) from exc
+            time.sleep(float(attempt))
+    outcomes = tuple(
+        verify_with_assessments(
+            candidate,
+            EntailmentAssessment(
+                label=by_id[str(index)].entailment_label,
+                score=by_id[str(index)].entailment_score,
+                reasoning=(
+                    "Groq batch entailment code: "
+                    f"{by_id[str(index)].entailment_reason_code}"
+                ),
+            ),
+            CriticAssessment(
+                has_substantive_objection=by_id[str(index)].critic_has_substantive_objection,
+                objection=(
+                    by_id[str(index)].critic_reason_code
+                    if by_id[str(index)].critic_has_substantive_objection
+                    else None
+                ),
+                reasoning=(
+                    "Groq batch critic code: "
+                    f"{by_id[str(index)].critic_reason_code}"
+                ),
+            ),
+            params=load_confidence_params().params,
+        )
+        for index, candidate in enumerate(candidates)
+    )
+    usages = [_usage(callback) for callback in callbacks]
+    reported = [usage for usage in usages if usage.total_tokens is not None]
+    usage = (
+        InvocationUsage(
+            prompt_tokens=sum(item.prompt_tokens or 0 for item in reported),
+            completion_tokens=sum(item.completion_tokens or 0 for item in reported),
+        )
+        if reported
+        else EMPTY_INVOCATION_USAGE
+    )
+    return VerificationBatchOutcome(outcomes, usage)
 
 
 def _invoke_with_free_tier_backoff(

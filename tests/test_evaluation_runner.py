@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 
 from apps.api.database import async_session_maker
-from packages.evaluation.runner import run_diff_eval, run_extraction_eval
+from packages.evaluation.runner import _prediction_span, run_diff_eval, run_extraction_eval
 from packages.regulatory_core.models.agents import (
     AgentRun,
     AgentStatus,
@@ -65,6 +65,32 @@ TABLE OF CONTENTS
 19. Cyber Security framework for Stock Brokers
 19.1. Brokers shall report cyber incidents within 6 hours.
 """
+
+
+def test_prediction_span_prefers_persisted_absolute_citation_offsets() -> None:
+    document_id = uuid.uuid4()
+    clause = Clause(
+        document_id=document_id,
+        clause_number="1.1",
+        text_content="source",
+    )
+    obligation = Obligation(
+        document_id=document_id,
+        clause_id=uuid.uuid4(),
+        source_text="source",
+        normalized_obligation="duty",
+    )
+    obligation.citations.append(
+        ObligationCitation(
+            field_name="action",
+            cited_text="exact quote",
+            char_start=120,
+            char_end=131,
+            clause_id=obligation.clause_id,
+        )
+    )
+
+    assert _prediction_span(obligation, clause, {}) == (120, 131)
 
 
 async def test_extraction_runner_persists_full_fixture_contract() -> None:

@@ -4,8 +4,8 @@
 HONESTY LEDGER
 ==============
 REAL INPUTS AND RELATIONSHIPS
-* Tenant A is the unseeded stock-broker organization already bound by Phase 5 to the real
-  45-obligation August-2024 registry.
+* Tenant A is the unseeded stock-broker organization already bound by Phase 5 to the real active
+  August-2024 registry.
 * Every control mapping is produced by the ordered, inspectable text rules in ``CONTROL_CATALOG``
   over the real obligation actor/action/object/normalized text. No obligation ID is typed into a
   rule and no model proposes a mapping.
@@ -135,7 +135,7 @@ CONTROL_CATALOG: tuple[ControlSpec, ...] = (
         "Head — Membership Compliance",
         "on occurrence",
         365,
-        ("verify antecedents",),
+        ("verify antecedents", "know your client", "kyc", "client identity", "due diligence"),
         "Fit-and-Proper Screening Register FY2026",
     ),
     ControlSpec(
@@ -145,7 +145,14 @@ CONTROL_CATALOG: tuple[ControlSpec, ...] = (
         "Compliance Officer",
         "annual",
         365,
-        ("not been convicted of any offence involving fraud or dishonesty",),
+        (
+            "not been convicted of any offence involving fraud or dishonesty",
+            "fraud",
+            "dishonesty",
+            "convicted",
+            "integrity",
+            "fit and proper",
+        ),
         "Member Integrity Declaration Pack FY2026",
     ),
     ControlSpec(
@@ -155,7 +162,13 @@ CONTROL_CATALOG: tuple[ControlSpec, ...] = (
         "Regulatory Filings Manager",
         "on occurrence",
         365,
-        ("prescribed form along with applicable fees",),
+        (
+            "prescribed form along with applicable fees",
+            "registration fee",
+            "apply for registration",
+            "sebi registration",
+            "grant of registration",
+        ),
         "Stock-Broker Registration Dossier Register",
         None,
     ),
@@ -166,7 +179,16 @@ CONTROL_CATALOG: tuple[ControlSpec, ...] = (
         "Records Management Officer",
         "annual",
         365,
-        ("preserve hard copies of registration applications",),
+        (
+            "preserve hard copies of registration applications",
+            "maintain record",
+            "record keeping",
+            "preserve",
+            "log report",
+            "books of account",
+            "contract note",
+            "ecn",
+        ),
         "Registration Records Retrieval Test FY2026",
     ),
     ControlSpec(
@@ -176,7 +198,7 @@ CONTROL_CATALOG: tuple[ControlSpec, ...] = (
         "Company Secretary",
         "on occurrence",
         365,
-        ("change in control",),
+        ("change in control", "amalgam"),
         "Change-in-Control Approval Register FY2026",
     ),
     ControlSpec(
@@ -186,7 +208,7 @@ CONTROL_CATALOG: tuple[ControlSpec, ...] = (
         "Company Secretary",
         "on occurrence",
         365,
-        ("surrender the certificate of registration",),
+        ("surrender the certificate of registration", "surrender", "cessation of business"),
         "Registration Surrender Checklist Register",
     ),
     ControlSpec(
@@ -196,7 +218,7 @@ CONTROL_CATALOG: tuple[ControlSpec, ...] = (
         "HR Compliance Manager",
         "quarterly",
         92,
-        ("provide pan details",),
+        ("provide pan details", "pan details", "permanent account number"),
         "KMP and Dealer PAN Reconciliation Q1 FY2026-27",
     ),
     ControlSpec(
@@ -211,6 +233,8 @@ CONTROL_CATALOG: tuple[ControlSpec, ...] = (
             "settlement account",
             "all new bank and demat accounts",
             "closure of any reported bank and demat accounts",
+            "bank account",
+            "client account",
         ),
         "Bank and Demat Account Master Reconciliation Q4 FY2025-26",
         1.5,
@@ -222,7 +246,17 @@ CONTROL_CATALOG: tuple[ControlSpec, ...] = (
         "Treasury Operations Head",
         "daily",
         1,
-        ("receive clients' funds", "make payment to clients"),
+        (
+            "receive clients' funds",
+            "make payment to clients",
+            "client fund",
+            "nodal",
+            "running account",
+            "margin",
+            "collateral",
+            "pledge",
+            "settlement",
+        ),
         "Client Nodal Account Routing Exception Report",
     ),
     ControlSpec(
@@ -232,7 +266,12 @@ CONTROL_CATALOG: tuple[ControlSpec, ...] = (
         "Depository Operations Head",
         "monthly",
         31,
-        ("maintain demat accounts only", "inform the stock exchanges of existing and new demat"),
+        (
+            "maintain demat accounts only",
+            "inform the stock exchanges of existing and new demat",
+            "demat",
+            "depository participant",
+        ),
         "Demat Account Classification Register — July 2026",
     ),
     ControlSpec(
@@ -242,7 +281,14 @@ CONTROL_CATALOG: tuple[ControlSpec, ...] = (
         "Chief Risk Officer",
         "daily",
         1,
-        ("mechanism for monitoring clients' funds", "mechanism to monitor clients' funds"),
+        (
+            "mechanism for monitoring clients' funds",
+            "mechanism to monitor clients' funds",
+            "monitor",
+            "surveillance",
+            "misuse",
+            "net worth",
+        ),
         "Client-Fund G-Principle Surveillance Log",
     ),
     ControlSpec(
@@ -252,8 +298,29 @@ CONTROL_CATALOG: tuple[ControlSpec, ...] = (
         "Head — Surveillance Investigations",
         "monthly",
         31,
-        ("seek clarifications, carry out inspections",),
+        (
+            "seek clarifications, carry out inspections",
+            "inspection",
+            "investigation",
+            "grievance",
+            "disciplinary",
+            "penalty",
+            "complaint",
+            "dispute",
+            "arbitration",
+            "redressal",
+        ),
         "Client-Fund Alert Investigation Register — July 2026",
+    ),
+    ControlSpec(
+        "internal_audit_reporting",
+        "Half-yearly internal-audit reporting control",
+        "Obtains auditor declarations and tracks audit-report submission within the two-month window.",
+        "Head — Internal Audit",
+        "half-yearly",
+        183,
+        ("declaration and auditor details", "internal audit reports are submitted", "audit report"),
+        "Internal Audit Submission Pack H1 FY2026-27",
     ),
     ControlSpec(
         "exchange_information",
@@ -265,6 +332,15 @@ CONTROL_CATALOG: tuple[ControlSpec, ...] = (
         (
             "submit required information to stock exchange",
             "submit the required information to the stock exchanges",
+            "submit",
+            "compliance",
+            "inform the exchange",
+            "report",
+            "inform",
+            "notify",
+            "disclose",
+            "circular",
+            "communicate",
         ),
         "Exchange Information Submission Register — July 2026",
     ),
@@ -275,18 +351,27 @@ CONTROL_CATALOG: tuple[ControlSpec, ...] = (
         "Audit Committee Secretary",
         "half-yearly",
         183,
-        ("undergo a half-yearly internal audit", "appoint or re-appoint"),
+        (
+            "undergo a half-yearly internal audit",
+            "appoint or re-appoint",
+            "internal audit",
+            "system audit",
+            "outsourc",
+            "security",
+            "cyber",
+            "vapt",
+            "vulnerability",
+            "password",
+            "incident",
+            "encrypt",
+            "algorithm",
+            "algo",
+            "risk management",
+            "policy",
+            "procedure",
+            "trading system",
+        ),
         "Internal Audit Plan and Independence Register H1 FY2026-27",
-    ),
-    ControlSpec(
-        "internal_audit_reporting",
-        "Half-yearly internal-audit reporting control",
-        "Obtains auditor declarations and tracks audit-report submission within the two-month window.",
-        "Head — Internal Audit",
-        "half-yearly",
-        183,
-        ("declaration and auditor details", "internal audit reports are submitted"),
-        "Internal Audit Submission Pack H1 FY2026-27",
     ),
 )
 

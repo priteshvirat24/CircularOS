@@ -14,12 +14,17 @@ from sqlalchemy.orm import selectinload
 from apps.api.config import get_settings
 from apps.api.database import async_session_maker
 from packages.ai.workflows.verification import (
+    VERIFICATION_MAX_BATCH_CANDIDATES,
+    VERIFICATION_MAX_BATCH_PAYLOAD_CHARS,
+    VERIFICATION_MAX_OUTPUT_TOKENS,
     CandidateCitation,
+    InvocationUsage,
     VerificationCandidate,
     VerificationOutcome,
     VerificationRoute,
     outcome_as_dict,
-    run_verification,
+    run_verification_batch,
+    split_verification_batches,
 )
 from packages.regulatory_core.models.agents import (
     ExtractionRun,
@@ -79,7 +84,11 @@ def _candidate(obligation: Obligation) -> VerificationCandidate:
     )
 
 
-async def _create_or_resume_run(document: RegulatoryDocument, total: int) -> ExtractionRun:
+async def _create_or_resume_run(
+    document: RegulatoryDocument,
+    total: int,
+    source_provenance: dict[str, str],
+) -> ExtractionRun:
     async with async_session_maker() as db:
         existing = (
             await db.execute(
@@ -93,7 +102,10 @@ async def _create_or_resume_run(document: RegulatoryDocument, total: int) -> Ext
                 .limit(1)
             )
         ).scalar_one_or_none()
-        if existing is not None:
+        if existing is not None and all(
+            str((existing.checkpoint_data or {}).get(key) or "") == value
+            for key, value in source_provenance.items()
+        ):
             existing.status = WorkflowStatus.RUNNING
             existing.current_stage = "verification"
             await db.commit()
@@ -111,14 +123,25 @@ async def _create_or_resume_run(document: RegulatoryDocument, total: int) -> Ext
             started_at=datetime.now(UTC),
             total_tokens=0,
             total_cost_usd=0.0,
-            checkpoint_data={"version": 1, "completed_ids": [], "failures": []},
+            checkpoint_data={
+                "version": 2,
+                **source_provenance,
+                "completed_ids": [],
+                "failures": [],
+            },
         )
         db.add(run)
         await db.commit()
         return run
 
 
-async def _persist_outcome(run_id: UUID, outcome: VerificationOutcome) -> None:
+async def _persist_outcome(
+    run_id: UUID,
+    outcome: VerificationOutcome,
+    *,
+    invocation_mode: Literal["separate", "combined", "none"] = "separate",
+    combined_usage: InvocationUsage | None = None,
+) -> None:
     payload = outcome_as_dict(outcome)
     settings = get_settings()
     async with async_session_maker() as db:
@@ -189,6 +212,9 @@ async def _persist_outcome(run_id: UUID, outcome: VerificationOutcome) -> None:
                     "model": settings.critic_model_name,
                     "prompt": "regulatory_critic@1.0",
                     "passes": 1,
+                    "provider_call_shape": "combined_source-context_batch",
+                    "batch_size_limit": VERIFICATION_MAX_BATCH_CANDIDATES,
+                    "batch_payload_char_limit": VERIFICATION_MAX_BATCH_PAYLOAD_CHARS,
                 },
             ),
             ValidationResult(
@@ -203,10 +229,18 @@ async def _persist_outcome(run_id: UUID, outcome: VerificationOutcome) -> None:
             ),
         )
         db.add_all(validation_rows)
-        invocation_usage = (
-            ("entailment", outcome.entailment_usage),
-            ("critic", outcome.critic_usage),
-        )
+        invocation_usage: tuple[tuple[str, InvocationUsage], ...]
+        if invocation_mode == "separate":
+            invocation_usage = (
+                ("entailment", outcome.entailment_usage),
+                ("critic", outcome.critic_usage),
+            )
+        elif invocation_mode == "combined":
+            if combined_usage is None:
+                raise ValueError("combined invocation mode requires provider usage")
+            invocation_usage = (("combined_entailment_critic_batch", combined_usage),)
+        else:
+            invocation_usage = ()
         for task_type, usage in invocation_usage:
             db.add(
                 ModelInvocation(
@@ -224,6 +258,10 @@ async def _persist_outcome(run_id: UUID, outcome: VerificationOutcome) -> None:
                 )
             )
 
+        payload["verification_run_id"] = str(run.id)
+        payload["source_extraction_run_id"] = str(
+            (run.checkpoint_data or {}).get("source_extraction_run_id") or ""
+        )
         obligation.validation_results = payload
         obligation.confidence = outcome.confidence.score
         obligation.validation_status = outcome.route.value
@@ -341,7 +379,8 @@ async def _persist_outcome(run_id: UUID, outcome: VerificationOutcome) -> None:
 async def run_document_verification(
     document_title: str, *, free_tier_cooldown_seconds: float = 12.0
 ) -> VerificationRunSummary:
-    """Verify one existing document corpus without adding extraction/model spend."""
+    """Verify one existing document corpus with free-tier critic calls and real usage audit."""
+    settings = get_settings()
     async with async_session_maker() as db:
         document = (
             await db.execute(
@@ -360,16 +399,63 @@ async def run_document_verification(
             .scalars()
             .all()
         )
+        source_run_ids = {
+            obligation.extraction_run_id
+            for obligation in obligations
+            if obligation.extraction_run_id is not None
+        }
+        if not obligations or len(source_run_ids) != 1 or any(
+            obligation.extraction_run_id is None for obligation in obligations
+        ):
+            raise RuntimeError(
+                "Verification requires one non-empty active registry from one extraction run"
+            )
+        source_run_id = next(iter(source_run_ids))
+        source_run = await db.get(ExtractionRun, source_run_id)
+        if source_run is None:
+            raise RuntimeError("Source extraction run is missing")
+        source_checkpoint = source_run.checkpoint_data or {}
+        source_provenance = {
+            "source_extraction_run_id": str(source_run.id),
+            "source_provider": str(source_checkpoint.get("provider") or ""),
+            "source_model": str(source_checkpoint.get("model") or ""),
+            "source_corpus_run_id": str(source_checkpoint.get("corpus_run_id") or ""),
+            "source_run_config_hash": str(source_checkpoint.get("run_config_hash") or ""),
+            "critic_provider": str(settings.critic_model_provider or ""),
+            "critic_model": str(settings.critic_model_name or ""),
+            "verification_prompt": "verification_batch_critic@1.3",
+            "verification_batch_size": str(VERIFICATION_MAX_BATCH_CANDIDATES),
+            "verification_batch_payload_chars": str(
+                VERIFICATION_MAX_BATCH_PAYLOAD_CHARS
+            ),
+            "verification_max_output_tokens": str(VERIFICATION_MAX_OUTPUT_TOKENS),
+        }
+        if document_title == "stockbrokers_master_2024-08-09.pdf":
+            if source_run.status != WorkflowStatus.COMPLETED:
+                raise RuntimeError("Full August verification requires a completed extraction run")
+            if any(not value for value in source_provenance.values()):
+                raise RuntimeError("Full August extraction provenance is incomplete")
+            if source_provenance["source_provider"] != "mistral" or source_provenance[
+                "source_model"
+            ] != "mistral-large-latest":
+                raise RuntimeError("Full August registry was not produced by Mistral Large")
         candidates = [_candidate(obligation) for obligation in obligations]
 
-    run = await _create_or_resume_run(document, len(candidates))
+    run = await _create_or_resume_run(document, len(candidates), source_provenance)
     completed_ids = set((run.checkpoint_data or {}).get("completed_ids", []))
     pending = [item for item in candidates if item.obligation_id not in completed_ids]
     try:
-        for index, item in enumerate(pending):
-            outcome = await asyncio.to_thread(run_verification, item)
-            await _persist_outcome(run.id, outcome)
-            if index < len(pending) - 1 and free_tier_cooldown_seconds > 0:
+        batches = split_verification_batches(pending)
+        for batch_index, batch in enumerate(batches):
+            batch_result = await asyncio.to_thread(run_verification_batch, tuple(batch))
+            for outcome_index, outcome in enumerate(batch_result.outcomes):
+                await _persist_outcome(
+                    run.id,
+                    outcome,
+                    invocation_mode="combined" if outcome_index == 0 else "none",
+                    combined_usage=batch_result.usage if outcome_index == 0 else None,
+                )
+            if batch_index < len(batches) - 1 and free_tier_cooldown_seconds > 0:
                 await asyncio.sleep(free_tier_cooldown_seconds)
     except Exception as exc:
         async with async_session_maker() as db:
@@ -390,8 +476,47 @@ async def run_document_verification(
         db_run = await db.get(ExtractionRun, run.id)
         if db_run is None:
             raise RuntimeError(f"verification run disappeared: {run.id}")
+        active_obligations = list(
+            (
+                await db.execute(
+                    select(Obligation).where(
+                        Obligation.document_id == document.id,
+                        Obligation.deleted_at.is_(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        active_ids = {str(obligation.id) for obligation in active_obligations}
+        checkpoint_ids = set((db_run.checkpoint_data or {}).get("completed_ids", []))
+        validation_ids = {
+            str(obligation_id)
+            for obligation_id in (
+                (
+                    await db.execute(
+                        select(ValidationResult.obligation_id)
+                        .where(ValidationResult.extraction_run_id == db_run.id)
+                        .distinct()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        }
+        if active_ids != checkpoint_ids or active_ids != validation_ids:
+            raise RuntimeError(
+                "Cannot seal full verification: active, checkpoint, and validation IDs differ"
+            )
+        for obligation in active_obligations:
+            payload = dict(obligation.validation_results or {})
+            payload["verification_run_id"] = str(db_run.id)
+            payload["source_extraction_run_id"] = str(
+                (db_run.checkpoint_data or {}).get("source_extraction_run_id") or ""
+            )
+            obligation.validation_results = payload
         db_run.status = WorkflowStatus.COMPLETED
-        db_run.current_stage = "partial_corpus_complete"
+        db_run.current_stage = "full_corpus_complete"
         db_run.completed_at = datetime.now(UTC)
         if db_run.started_at:
             db_run.duration_seconds = (db_run.completed_at - db_run.started_at).total_seconds()
@@ -404,7 +529,7 @@ async def run_document_verification(
             db_run.rejected_obligations or 0,
             0,
             0.0,
-            "partial August corpus",
+            "full August corpus",
         )
         verified = (
             (

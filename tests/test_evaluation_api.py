@@ -36,6 +36,15 @@ async def _seed_run() -> uuid.UUID:
                 "field_accuracy": {"actor": 1.0},
                 "named_failures": [{"gold_id": "fixture-failure"}],
                 "corpus_coverage": {"status": "PARTIAL", "evaluated_examples": 5},
+                "extraction_provenance": {
+                    "provider": "mistral",
+                    "model": "mistral-large-latest",
+                    "corpus_run_id": "fixture-corpus",
+                },
+                "verification_provenance": {
+                    "verification_run_id": "fixture-verification",
+                    "coverage_fraction": 1.0,
+                },
                 "token_cost_accounting": {"complete": True},
                 "ground_truth_note": "single-annotator fixture",
             },
@@ -59,6 +68,8 @@ async def test_get_evaluation_run_returns_persisted_contract(client, app) -> Non
     assert payload["headline_metrics"]["precision"] == 0.5
     assert payload["confusion"]["true_positives"] == 2
     assert payload["corpus_coverage"]["status"] == "PARTIAL"
+    assert payload["extraction_provenance"]["model"] == "mistral-large-latest"
+    assert payload["verification_provenance"]["coverage_fraction"] == 1.0
     assert payload["named_failures"][0]["gold_id"] == "fixture-failure"
     assert payload["usage"]["total_tokens"] == 12
 

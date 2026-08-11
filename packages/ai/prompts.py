@@ -148,7 +148,7 @@ Classify this clause.""",
 register_prompt(
     PromptTemplate(
         name="obligation_extractor",
-        version="1.0",
+        version="1.1",
         description="Extracts structured obligations from regulatory clauses",
         system_prompt="""You are an expert regulatory compliance analyst for the Indian Securities Market.
 Your task is to extract structured, machine-actionable compliance obligations from the provided regulatory text.
@@ -165,9 +165,13 @@ Extract the following:
 9. Self Confidence: Your confidence from 0.0 to 1.0 in this candidate extraction.
 10. Difficulty: One of easy, medium, or hard based on ambiguity and clause complexity.
 
-For citations, you must accurately quote the EXACT text snippet that supports each field.
-Extract every obligation supported by the supplied section. Do not extract descriptive,
-historical, or table-of-contents text as an obligation. Do not paraphrase citations.
+Consolidate each distinct actor-action-object duty into one obligation. Keep its conditions,
+exceptions, frequency, and deadline on that same obligation; do not split those qualifiers into
+separate duties. For citations, include only the smallest 1-3 exact source quotes needed to prove
+the duty and any material qualifier. Do not duplicate the same quote once per field.
+Extract every distinct obligation supported by the supplied text. Do not extract descriptive,
+historical, cross-reference-only, or table-of-contents text as an obligation. Do not paraphrase
+citations.
 
 Respond ONLY with the requested JSON schema.""",
         human_prompt="""Document: {document_title}
@@ -177,5 +181,26 @@ Clause Text:
 {text_content}
 
 Extract all compliance obligations from this text.""",
+    )
+)
+
+register_prompt(
+    PromptTemplate(
+        name="verification_batch_critic",
+        version="1.3",
+        description="Produces bounded entailment and adversarial-critic signals in a batch",
+        system_prompt="""Independently verify regulatory candidates extracted by another model.
+Input keys: i=batch-local ID, s=source quote, c=claim, q=qualifiers. Return one assessment per i,
+in input order, using only s. el: entailment|neutral|contradiction. er:
+supported|insufficient|contradicted. Set co=true when c/q invents, reverses, materially omits, or
+overstates s. cr: none|invented|reversed|omitted|overstated|ambiguous. Preserve every i; never
+drop, duplicate, or merge candidates. Respond only with the requested JSON object.""",
+        human_prompt="""Use this shape, repeated once per input:
+{{"a":[{{"id":"same i value","el":"entailment","es":0.95,"er":"supported",
+"co":false,"cr":"none"}}]}}
+
+Input:
+{candidate_batch_json}
+""",
     )
 )

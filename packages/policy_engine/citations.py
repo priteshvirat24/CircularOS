@@ -81,6 +81,27 @@ def _normalized_span(normalized: _NormalizedText, start: int, end: int) -> tuple
     return normalized.original_offsets[start], normalized.original_offsets[end - 1] + 1
 
 
+def find_citation_span_fast(quote: str, source_text: str) -> tuple[int, int] | None:
+    """Locate exact/normalized citation text without invoking the fuzzy fallback scan."""
+    if not quote or not quote.strip() or not source_text:
+        return None
+    exact_start = source_text.find(quote)
+    if exact_start >= 0:
+        return exact_start, exact_start + len(quote)
+    normalized_quote = _normalize_with_offsets(quote)
+    normalized_source = _normalize_with_offsets(source_text)
+    if not normalized_quote.text or len(normalized_quote.text) > len(normalized_source.text):
+        return None
+    normalized_start = normalized_source.text.find(normalized_quote.text)
+    if normalized_start < 0:
+        return None
+    return _normalized_span(
+        normalized_source,
+        normalized_start,
+        normalized_start + len(normalized_quote.text),
+    )
+
+
 def verify_citation(quote: str, source_text: str) -> CitationVerdict:
     """Verify a claimed quote against source text and return the first matched span."""
     if not quote or not quote.strip():

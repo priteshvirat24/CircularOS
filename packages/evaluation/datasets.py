@@ -5,9 +5,9 @@ Reads ``data/goldsets/obligations.jsonl`` and ``data/goldsets/changeset.jsonl``
 and materializes them as ``EvaluationDataset`` + ``EvaluationExample`` rows that the
 Phase-4 eval runner will score against.
 
-Idempotent: each dataset is keyed by a stable name. On re-run, the dataset's existing
-examples are deleted and re-inserted from the JSONL, so running twice yields exactly
-one copy — no duplicates.
+Idempotent: each dataset is keyed by a stable name and each example by its ``gold_id``.
+Reloads update examples in place so historical ``EvaluationResult`` foreign keys remain
+valid. Removing a previously loaded gold ID is refused; that requires a versioned dataset.
 
 Usage:
     python -m packages.evaluation.datasets            # load both gold sets
@@ -22,7 +22,7 @@ import json
 import os
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.database import async_session_maker
@@ -66,7 +66,7 @@ async def _upsert_dataset(
     description: str,
     metadata: dict[str, Any],
 ) -> EvaluationDataset:
-    """Get-or-create a dataset by name, and clear its examples for idempotent reload."""
+    """Get or update a dataset by its stable name without replacing example identities."""
     ds = (
         await db.execute(select(EvaluationDataset).where(EvaluationDataset.name == name))
     ).scalar_one_or_none()
@@ -84,9 +84,47 @@ async def _upsert_dataset(
         ds.dataset_type = dataset_type
         ds.description = description
         ds.metadata_json = metadata
-        # Clear prior examples so a reload never duplicates.
-        await db.execute(delete(EvaluationExample).where(EvaluationExample.dataset_id == ds.id))
     return ds
+
+
+async def _upsert_examples(
+    db: AsyncSession,
+    dataset: EvaluationDataset,
+    desired: list[dict[str, Any]],
+) -> None:
+    """Synchronize examples by gold ID while preserving IDs referenced by prior results."""
+    existing = list(
+        (
+            await db.execute(
+                select(EvaluationExample).where(EvaluationExample.dataset_id == dataset.id)
+            )
+        ).scalars()
+    )
+    by_gold_id: dict[str, EvaluationExample] = {}
+    for example in existing:
+        gold_id = str((example.input_data or {}).get("gold_id", ""))
+        if not gold_id or gold_id in by_gold_id:
+            raise ValueError(
+                f"Dataset {dataset.name!r} has missing or duplicate persisted gold IDs"
+            )
+        by_gold_id[gold_id] = example
+
+    desired_ids = {str(item["input_data"]["gold_id"]) for item in desired}
+    removed = sorted(set(by_gold_id) - desired_ids)
+    if removed:
+        raise ValueError(
+            f"Refusing to remove {len(removed)} gold examples from {dataset.name!r}; "
+            "create a versioned dataset instead. IDs: " + ", ".join(removed[:10])
+        )
+
+    for values in desired:
+        gold_id = str(values["input_data"]["gold_id"])
+        persisted = by_gold_id.get(gold_id)
+        if persisted is None:
+            db.add(EvaluationExample(dataset_id=dataset.id, **values))
+            continue
+        for field, value in values.items():
+            setattr(persisted, field, value)
 
 
 async def load_goldsets(check_only: bool = False) -> dict[str, Any]:
@@ -144,25 +182,26 @@ async def load_goldsets(check_only: bool = False) -> dict[str, Any]:
             "master circular, including negative (definitional/informational) examples.",
             obl_meta,
         )
+        obligation_examples = []
         for r in obligations:
             src = r["source"]
             expected = {k: r.get(k) for k in _OBL_EXPECTED_FIELDS}
-            db.add(
-                EvaluationExample(
-                    dataset_id=obl_ds.id,
-                    input_data={
+            obligation_examples.append(
+                {
+                    "input_data": {
                         "gold_id": r["id"],
                         "document": src["document"],
                         "clause_ref": src["clause_ref"],
                         "exact_quote": src["exact_quote"],
                     },
-                    expected_output=expected,
-                    source_document_id=aug_doc_id,
-                    difficulty=r.get("difficulty"),
-                    tags=r.get("tags") or [],
-                    annotator_notes=r.get("annotator_notes"),
-                )
+                    "expected_output": expected,
+                    "source_document_id": aug_doc_id,
+                    "difficulty": r.get("difficulty"),
+                    "tags": r.get("tags") or [],
+                    "annotator_notes": r.get("annotator_notes"),
+                }
             )
+        await _upsert_examples(db, obl_ds, obligation_examples)
         obl_ds.example_count = len(obligations)
 
         # ── change-set dataset ──────────────────────────────────────────
@@ -185,11 +224,11 @@ async def load_goldsets(check_only: bool = False) -> dict[str, Any]:
             "circulars, including cosmetic renumberings labeled NOT_A_CHANGE.",
             chg_meta,
         )
+        change_examples = []
         for r in changes:
-            db.add(
-                EvaluationExample(
-                    dataset_id=chg_ds.id,
-                    input_data={
+            change_examples.append(
+                {
+                    "input_data": {
                         "gold_id": r["id"],
                         "old_ref": r.get("old_ref"),
                         "new_ref": r.get("new_ref"),
@@ -197,16 +236,17 @@ async def load_goldsets(check_only: bool = False) -> dict[str, Any]:
                         "new_text": r.get("new_text"),
                         "obligation_summary": r.get("obligation_summary"),
                     },
-                    expected_output={
+                    "expected_output": {
                         "change_type": r["change_type"],
                         "changed_fields": r.get("changed_fields") or [],
                         "materiality_expected": r.get("materiality_expected"),
                     },
-                    source_document_id=aug_doc_id,
-                    tags=[r["change_type"]],
-                    annotator_notes=r.get("notes"),
-                )
+                    "source_document_id": aug_doc_id,
+                    "tags": [r["change_type"]],
+                    "annotator_notes": r.get("notes"),
+                }
             )
+        await _upsert_examples(db, chg_ds, change_examples)
         chg_ds.example_count = len(changes)
 
         await db.commit()

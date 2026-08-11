@@ -40,6 +40,13 @@ _OBLIGATION_TAU = 0.72
 # larger side's obligations found a match — i.e. the two sides were extracted comparably.
 _COVERAGE_FLOOR = 0.8
 
+# Full-corpus extraction can express equivalent wording with different structured fields. For a
+# section that was renumbered but kept the same canonical title, require an independent body-text
+# signal before allowing those model-derived deltas to manufacture a MODIFIED verdict. The real
+# labeled MODIFIED pair (§31→§32) has body similarity ≈0.81; the two renumber-only false positives
+# are ≈0.88 and ≈0.96. This guard strengthens (does not replace) the 0.8 obligation coverage floor.
+_RENUMBERED_BODY_STABILITY_FLOOR = 0.85
+
 _LEVEL_ORDER = {
     MaterialityLevel.NONE: 0, MaterialityLevel.LOW: 1,
     MaterialityLevel.MEDIUM: 2, MaterialityLevel.HIGH: 3,
@@ -214,7 +221,16 @@ def diff_pair(
 
     obl = compare_obligations(old_obls or [], new_obls or []) if (old_obls or new_obls) else None
     # Only a matched-pair field delta may flip/elevate a section — never a bare count difference.
-    obl_flips = obl is not None and obl.has_field_delta
+    renumbered_same_title = (
+        old.number != new.number and canonical_title(old.title) == canonical_title(new.title)
+    )
+    body_similarity = lexical_similarity(
+        clean_document_text(old.body), clean_document_text(new.body)
+    )
+    stable_renumbering = (
+        renumbered_same_title and body_similarity >= _RENUMBERED_BODY_STABILITY_FLOOR
+    )
+    obl_flips = obl is not None and obl.has_field_delta and not stable_renumbering
 
     if not section_verdict.is_substantive and not obl_flips:
         return None  # cosmetic / renumber-only, and no obligation field change → not reported

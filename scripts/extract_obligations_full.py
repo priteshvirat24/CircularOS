@@ -18,8 +18,11 @@ Run from the repository root:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import re
 import time
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -29,7 +32,7 @@ from typing import Any, cast
 import fitz  # type: ignore[import-untyped]
 import structlog
 from langchain_core.callbacks import UsageMetadataCallbackHandler
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from apps.api.config import get_settings
 from apps.api.database import async_session_maker
@@ -64,8 +67,22 @@ DOCUMENT_TITLES = (
     "stockbrokers_master_2024-08-09.pdf",
     "stockbrokers_master_2025-06-17.pdf",
 )
-MAX_KEY_ATTEMPTS = 10
-CONCURRENCY = 10
+MAX_ATTEMPTS = 6
+CONCURRENCY = 4
+REQUEST_START_INTERVAL_SECONDS = 16.0
+RUN_CONFIG_VERSION = 7
+PROMPT_VERSION = "obligation_extractor@1.1-full-section-chunked"
+SCHEMA_VERSION = "ClauseExtractionResult@1"
+MAX_CHUNK_CHARS = 12_000
+CHUNKING_VERSION = "line-boundary-nonoverlap-v1"
+SECTION_LOCATOR_VERSION = "toc-title-aligned-body-region-v4"
+RATE_LIMIT_SOURCE = (
+    "Observed Phase 4.5 probes: four requests were accepted, the fifth returned Mistral "
+    "rate_limited code 1300, and a new request 42 seconds later still returned 1300 after "
+    "the first four had completed. Treat as a rolling four-requests/minute limit: starts "
+    "are spaced 16 seconds apart with at most four calls in flight."
+)
+_RETRY_AFTER = re.compile(r"retry(?:-after| in)?[^0-9]*([0-9]+(?:\.[0-9]+)?)", re.I)
 
 
 @dataclass(frozen=True)
@@ -75,6 +92,21 @@ class SourceSection:
     body: str
     char_start: int | None
     char_end: int | None
+
+
+@dataclass(frozen=True)
+class SourceChunk:
+    section_number: int
+    section_title: str
+    chunk_index: int
+    chunk_count: int
+    body: str
+    char_start: int | None
+    char_end: int | None
+
+    @property
+    def checkpoint_key(self) -> str:
+        return f"{self.section_number}:{self.chunk_index}"
 
 
 def _load_sections(title: str) -> list[SourceSection]:
@@ -93,36 +125,164 @@ def _load_sections(title: str) -> list[SourceSection]:
     ]
 
 
+def _chunk_section(section: SourceSection, max_chars: int = MAX_CHUNK_CHARS) -> list[SourceChunk]:
+    """Split at source line boundaries without overlap or text loss."""
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive")
+    text = section.body
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while len(text) - start > max_chars:
+        limit = start + max_chars
+        cut = text.rfind("\n", start + max_chars // 2, limit + 1)
+        cut = limit if cut < 0 else cut + 1
+        spans.append((start, cut))
+        start = cut
+    spans.append((start, len(text)))
+    count = len(spans)
+    return [
+        SourceChunk(
+            section_number=section.number,
+            section_title=section.title,
+            chunk_index=index,
+            chunk_count=count,
+            body=text[local_start:local_end],
+            char_start=(section.char_start + local_start)
+            if section.char_start is not None
+            else None,
+            char_end=(section.char_start + local_end) if section.char_start is not None else None,
+        )
+        for index, (local_start, local_end) in enumerate(spans)
+    ]
+
+
+def _load_chunks(title: str) -> list[SourceChunk]:
+    return [chunk for section in _load_sections(title) for chunk in _chunk_section(section)]
+
+
 def _jsonable_result(result: ClauseExtractionResult) -> dict[str, Any]:
     return cast(dict[str, Any], json.loads(result.model_dump_json()))
+
+
+def _run_config() -> dict[str, Any]:
+    settings = get_settings()
+    provider = settings.reasoning_model_provider
+    model = settings.reasoning_model_name
+    if provider != "mistral" or model != "mistral-large-latest":
+        raise RuntimeError(
+            "Full-corpus Phase 4.5 extraction requires "
+            "mistral/mistral-large-latest for both documents"
+        )
+    payload = {
+        "version": RUN_CONFIG_VERSION,
+        "provider": provider,
+        "model": model,
+        "temperature": 0.0,
+        "prompt_version": PROMPT_VERSION,
+        "schema_version": SCHEMA_VERSION,
+        "chunking_version": CHUNKING_VERSION,
+        "section_locator_version": SECTION_LOCATOR_VERSION,
+        "max_chunk_chars": MAX_CHUNK_CHARS,
+        "concurrency": CONCURRENCY,
+        "request_start_interval_seconds": REQUEST_START_INTERVAL_SECONDS,
+        "rate_limit_source": RATE_LIMIT_SOURCE,
+        "cost_policy": "Mistral Experiment free tier; persisted cost USD 0.00",
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return {**payload, "hash": hashlib.sha256(canonical.encode()).hexdigest()}
 
 
 def _checkpoint(run: ExtractionRun) -> dict[str, Any]:
     value = run.checkpoint_data or {}
     return {
-        "version": 1,
-        "model": get_settings().reasoning_model_name,
+        "version": value.get("version", RUN_CONFIG_VERSION),
+        "corpus_run_id": value.get("corpus_run_id"),
+        "run_config": dict(value.get("run_config", {})),
+        "run_config_hash": value.get("run_config_hash"),
+        "provider": value.get("provider"),
+        "model": value.get("model"),
         "sections": dict(value.get("sections", {})),
         "errors": list(value.get("errors", [])),
     }
 
 
-async def _get_or_create_run(document: RegulatoryDocument) -> ExtractionRun:
+def assert_consistent_run_provenance(runs: Sequence[ExtractionRun]) -> dict[str, str]:
+    """Refuse mixed providers, models, configs, or corpus batch identities."""
+    if len(runs) != len(DOCUMENT_TITLES):
+        raise RuntimeError(f"Expected {len(DOCUMENT_TITLES)} document runs, got {len(runs)}")
+    checkpoints = [_checkpoint(run) for run in runs]
+    required = ("corpus_run_id", "run_config_hash", "provider", "model")
+    for field in required:
+        values = {str(checkpoint.get(field) or "") for checkpoint in checkpoints}
+        if "" in values or len(values) != 1:
+            raise RuntimeError(f"Mixed or missing full-corpus provenance field: {field}")
+    return {field: str(checkpoints[0][field]) for field in required}
+
+
+async def _resolve_corpus_run_id(
+    documents: Sequence[RegulatoryDocument], run_config: dict[str, Any]
+) -> str:
+    """Resume one compatible corpus batch or create a new shared identity."""
     async with async_session_maker() as db:
-        existing = (
-            await db.execute(
-                select(ExtractionRun)
-                .where(
-                    ExtractionRun.document_id == document.id,
-                    ExtractionRun.workflow_type == WORKFLOW_TYPE,
-                    ExtractionRun.status.in_(
-                        [WorkflowStatus.RUNNING, WorkflowStatus.PAUSED, WorkflowStatus.FAILED]
-                    ),
+        candidates = list(
+            (
+                await db.execute(
+                    select(ExtractionRun)
+                    .where(
+                        ExtractionRun.document_id.in_([document.id for document in documents]),
+                        ExtractionRun.workflow_type == WORKFLOW_TYPE,
+                        ExtractionRun.status.in_(
+                            [WorkflowStatus.RUNNING, WorkflowStatus.PAUSED, WorkflowStatus.FAILED]
+                        ),
+                    )
+                    .order_by(ExtractionRun.created_at.desc())
                 )
-                .order_by(ExtractionRun.created_at.desc())
-                .limit(1)
             )
-        ).scalar_one_or_none()
+            .scalars()
+            .all()
+        )
+    compatible = [
+        _checkpoint(run)
+        for run in candidates
+        if _checkpoint(run).get("run_config_hash") == run_config["hash"]
+    ]
+    corpus_ids = {str(item.get("corpus_run_id") or "") for item in compatible}
+    corpus_ids.discard("")
+    if len(corpus_ids) > 1:
+        raise RuntimeError("Multiple compatible incomplete corpus batches exist; reconcile first")
+    return next(iter(corpus_ids), str(uuid.uuid4()))
+
+
+async def _get_or_create_run(
+    document: RegulatoryDocument, corpus_run_id: str, run_config: dict[str, Any]
+) -> ExtractionRun:
+    async with async_session_maker() as db:
+        candidates = list(
+            (
+                await db.execute(
+                    select(ExtractionRun)
+                    .where(
+                        ExtractionRun.document_id == document.id,
+                        ExtractionRun.workflow_type == WORKFLOW_TYPE,
+                        ExtractionRun.status.in_(
+                            [WorkflowStatus.RUNNING, WorkflowStatus.PAUSED, WorkflowStatus.FAILED]
+                        ),
+                    )
+                    .order_by(ExtractionRun.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        existing = next(
+            (
+                run
+                for run in candidates
+                if _checkpoint(run).get("corpus_run_id") == corpus_run_id
+                and _checkpoint(run).get("run_config_hash") == run_config["hash"]
+            ),
+            None,
+        )
         if existing is not None:
             existing.status = WorkflowStatus.RUNNING
             existing.current_stage = "extract_sections"
@@ -142,8 +302,12 @@ async def _get_or_create_run(document: RegulatoryDocument) -> ExtractionRun:
             total_tokens=0,
             total_cost_usd=0.0,
             checkpoint_data={
-                "version": 1,
-                "model": get_settings().reasoning_model_name,
+                "version": RUN_CONFIG_VERSION,
+                "corpus_run_id": corpus_run_id,
+                "run_config": run_config,
+                "run_config_hash": run_config["hash"],
+                "provider": run_config["provider"],
+                "model": run_config["model"],
                 "sections": {},
                 "errors": [],
             },
@@ -155,7 +319,7 @@ async def _get_or_create_run(document: RegulatoryDocument) -> ExtractionRun:
 
 async def _record_section(
     run_id: Any,
-    section: SourceSection,
+    section: SourceChunk,
     payload: dict[str, Any],
     prompt_tokens: int,
     completion_tokens: int,
@@ -166,8 +330,13 @@ async def _record_section(
         if run is None:
             raise RuntimeError(f"Extraction run disappeared: {run_id}")
         checkpoint = _checkpoint(run)
-        checkpoint["sections"][str(section.number)] = {
-            "title": section.title,
+        checkpoint["sections"][section.checkpoint_key] = {
+            "section_number": section.section_number,
+            "title": section.section_title,
+            "chunk_index": section.chunk_index,
+            "chunk_count": section.chunk_count,
+            "char_start": section.char_start,
+            "char_end": section.char_end,
             "result": payload,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
@@ -189,9 +358,13 @@ async def _record_section(
                 agent_type="llm_candidate_generation",
                 status=AgentStatus.COMPLETED,
                 input_summary={
-                    "section_number": section.number,
-                    "section_title": section.title,
+                    "section_number": section.section_number,
+                    "section_title": section.section_title,
+                    "chunk_index": section.chunk_index,
+                    "chunk_count": section.chunk_count,
                     "source_chars": len(section.body),
+                    "corpus_run_id": checkpoint["corpus_run_id"],
+                    "run_config_hash": checkpoint["run_config_hash"],
                 },
                 output_summary={
                     "obligations": len(payload.get("obligations", [])),
@@ -200,7 +373,7 @@ async def _record_section(
                 started_at=datetime.now(UTC),
                 completed_at=datetime.now(UTC),
                 duration_ms=duration_ms,
-                model_name=get_settings().reasoning_model_name,
+                model_name=str(checkpoint["model"]),
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=prompt_tokens + completion_tokens,
@@ -227,17 +400,19 @@ async def _mark_interrupted(run_id: Any, error: Exception) -> None:
 
 
 def _extract_section(
-    section: SourceSection, document_title: str
+    section: SourceChunk, document_title: str
 ) -> tuple[dict[str, Any], int, int, int]:
     prompt = get_prompt("obligation_extractor")
     messages = prompt.format_messages(
         document_title=document_title,
-        clause_number=str(section.number),
-        clause_heading=section.title,
+        clause_number=(
+            f"{section.section_number} chunk {section.chunk_index + 1}/{section.chunk_count}"
+        ),
+        clause_heading=section.section_title,
         text_content=section.body,
     )
     errors: list[str] = []
-    for attempt in range(1, MAX_KEY_ATTEMPTS + 1):
+    for attempt in range(1, MAX_ATTEMPTS + 1):
         usage = UsageMetadataCallbackHandler()
         started = time.monotonic()
         try:
@@ -258,19 +433,26 @@ def _extract_section(
             errors.append(f"attempt {attempt}: {type(exc).__name__}: {exc}")
             logger.warning(
                 "full_section_extraction_attempt_failed",
-                section=section.number,
+                section=section.section_number,
+                chunk=section.chunk_index,
                 attempt=attempt,
                 error=str(exc)[:500],
             )
+            if attempt < MAX_ATTEMPTS:
+                match = _RETRY_AFTER.search(str(exc))
+                delay = float(match.group(1)) + 1.0 if match else min(60.0, 2.0**attempt)
+                time.sleep(delay)
     raise RuntimeError(
-        f"Section {section.number} failed across {MAX_KEY_ATTEMPTS} rotated keys: "
-        + " | ".join(errors)
+        f"Section {section.section_number} chunk {section.chunk_index} failed across "
+        f"{MAX_ATTEMPTS} Mistral attempts: " + " | ".join(errors)
     )
 
 
-async def _extract_document(document: RegulatoryDocument) -> ExtractionRun:
-    sections = _load_sections(document.title)
-    run = await _get_or_create_run(document)
+async def _extract_document(
+    document: RegulatoryDocument, corpus_run_id: str, run_config: dict[str, Any]
+) -> ExtractionRun:
+    sections = _load_chunks(document.title)
+    run = await _get_or_create_run(document, corpus_run_id, run_config)
     checkpoint = _checkpoint(run)
     completed = set(checkpoint["sections"])
     logger.info(
@@ -280,9 +462,9 @@ async def _extract_document(document: RegulatoryDocument) -> ExtractionRun:
         resumed=len(completed),
     )
 
-    pending: list[SourceSection] = []
+    pending: list[SourceChunk] = []
     for section in sections:
-        if str(section.number) in completed:
+        if section.checkpoint_key in completed:
             continue
         if section.body.strip():
             pending.append(section)
@@ -297,17 +479,28 @@ async def _extract_document(document: RegulatoryDocument) -> ExtractionRun:
             )
 
     for batch_start in range(0, len(pending), CONCURRENCY):
+        batch_started = time.monotonic()
         batch = pending[batch_start : batch_start + CONCURRENCY]
         for section in batch:
             logger.info(
                 "full_section_extraction_start",
                 document=document.title,
-                section=section.number,
+                section=section.section_number,
+                chunk=f"{section.chunk_index + 1}/{section.chunk_count}",
                 progress=f"{batch_start + batch.index(section) + 1}/{len(pending)}",
                 chars=len(section.body),
             )
+
+        async def extract_after_delay(section: SourceChunk, delay: float) -> Any:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            return await asyncio.to_thread(_extract_section, section, document.title)
+
         results = await asyncio.gather(
-            *(asyncio.to_thread(_extract_section, section, document.title) for section in batch),
+            *(
+                extract_after_delay(section, index * REQUEST_START_INTERVAL_SECONDS)
+                for index, section in enumerate(batch)
+            ),
             return_exceptions=True,
         )
         failures: list[Exception] = []
@@ -329,6 +522,11 @@ async def _extract_document(document: RegulatoryDocument) -> ExtractionRun:
         if failures:
             await _mark_interrupted(run.id, failures[0])
             raise failures[0]
+        # Preserve the observed rolling four-request window even when all calls return quickly.
+        minimum_cycle = len(batch) * REQUEST_START_INTERVAL_SECONDS
+        remaining = minimum_cycle - (time.monotonic() - batch_started)
+        if remaining > 0 and batch_start + len(batch) < len(pending):
+            await asyncio.sleep(remaining)
 
     async with async_session_maker() as db:
         refreshed = await db.get(ExtractionRun, run.id)
@@ -340,96 +538,89 @@ async def _extract_document(document: RegulatoryDocument) -> ExtractionRun:
 
 
 def _as_json_list(value: Any) -> list[str] | None:
+    null_markers = {"", "null", "none", "n/a", "not applicable", "not specified"}
     if value is None:
         return None
     if isinstance(value, list):
-        return [str(item) for item in value if str(item).strip()] or None
+        normalized = [
+            str(item).strip()
+            for item in value
+            if str(item).strip().casefold() not in null_markers
+        ]
+        return normalized or None
     text = str(value).strip()
-    return [text] if text else None
+    return [text] if text.casefold() not in null_markers else None
+
+
+def _optional_text(value: Any, *, max_length: int | None = None) -> str | None:
+    """Normalize model null sentinels and enforce typed registry string bounds."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text.casefold() in {"", "null", "none", "n/a", "not applicable", "not specified"}:
+        return None
+    return text[:max_length] if max_length is not None else text
 
 
 async def _publish_atomically(
     documents: Sequence[RegulatoryDocument],
     runs: list[ExtractionRun],
 ) -> dict[str, int]:
-    sections_by_title = {title: _load_sections(title) for title in DOCUMENT_TITLES}
+    provenance = assert_consistent_run_provenance(runs)
+    sections_by_title = {title: _load_chunks(title) for title in DOCUMENT_TITLES}
     run_by_document = {run.document_id: run for run in runs}
     counts: dict[str, int] = {}
 
     async with async_session_maker() as db:
         document_ids = [document.id for document in documents]
-        old_full_run_ids = (
+        # Preserve all prior citations, validations, review tasks, controls, evidence mappings,
+        # and audit events. Only active registry rows are superseded; historical rows remain
+        # queryable through their original extraction-run provenance.
+        previous_active = list(
             (
                 await db.execute(
-                    select(ExtractionRun.id).where(
-                        ExtractionRun.document_id.in_(document_ids),
-                        ExtractionRun.workflow_type == WORKFLOW_TYPE,
-                        ExtractionRun.id.not_in([run.id for run in runs]),
+                    select(Obligation).where(
+                        Obligation.document_id.in_(document_ids),
+                        Obligation.is_deleted.is_(False),
                     )
                 )
             )
             .scalars()
             .all()
         )
-
-        # Review/validation dependencies are intentionally guarded rather than silently erased.
-        # The current pre-verification corpus has neither; a future rerun must explicitly archive
-        # human decisions before replacing published obligations.
-        dependency_counts = (
-            (
-                await db.execute(
-                    select(Obligation.id).where(Obligation.document_id.in_(document_ids))
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if dependency_counts:
-            from packages.regulatory_core.models.obligations import ReviewTask, ValidationResult
-
-            reviews = (
-                await db.execute(
-                    select(ReviewTask.id).where(ReviewTask.obligation_id.in_(dependency_counts))
-                )
-            ).first()
-            validations = (
-                await db.execute(
-                    select(ValidationResult.id).where(
-                        ValidationResult.obligation_id.in_(dependency_counts)
-                    )
-                )
-            ).first()
-            if reviews or validations:
-                raise RuntimeError(
-                    "Refusing to replace obligations that have review or validation history"
-                )
-
-        await db.execute(delete(Obligation).where(Obligation.document_id.in_(document_ids)))
-        if old_full_run_ids:
-            await db.execute(delete(Clause).where(Clause.extraction_run_id.in_(old_full_run_ids)))
+        for obligation in previous_active:
+            obligation.soft_delete()
 
         for document in documents:
             run = run_by_document[document.id]
             checkpoint = _checkpoint(run)
+            if checkpoint["run_config_hash"] != provenance["run_config_hash"]:
+                raise RuntimeError("Run configuration changed before publication")
             inserted = 0
             for order_index, section in enumerate(sections_by_title[document.title]):
-                result = checkpoint["sections"].get(str(section.number))
+                result = checkpoint["sections"].get(section.checkpoint_key)
                 if result is None:
                     raise RuntimeError(
-                        f"Missing completed section {section.number} for {document.title}"
+                        f"Missing completed section chunk {section.checkpoint_key} "
+                        f"for {document.title}"
                     )
                 payload = result["result"]
                 obligations = payload.get("obligations", [])
                 clause = Clause(
                     document_id=document.id,
-                    clause_number=f"{section.number}.",
+                    clause_number=(
+                        f"{section.section_number}.{section.chunk_index + 1}/{section.chunk_count}"
+                    ),
                     clause_type=(
                         ClauseType.OBLIGATION if obligations else ClauseType.CONTEXTUAL_STATEMENT
                     ),
                     level=0,
                     order_index=2_000_000 + order_index,
                     text_content=section.body,
-                    heading=f"{section.number}. {section.title}",
+                    heading=(
+                        f"{section.section_number}. {section.section_title} "
+                        f"[chunk {section.chunk_index + 1}/{section.chunk_count}]"
+                    ),
                     char_start=section.char_start,
                     char_end=section.char_end,
                     classification_confidence=1.0,
@@ -446,32 +637,43 @@ async def _publish_atomically(
                         risk_level = RiskLevel(risk_value)
                     except ValueError:
                         risk_level = RiskLevel.MEDIUM
+                    raw_frequency = _optional_text(candidate.get("frequency"))
                     obligation = Obligation(
                         organization_id=document.organization_id,
                         document_id=document.id,
                         clause_id=clause.id,
                         source_text=section.body,
                         normalized_obligation=candidate.get("normalized_obligation", ""),
-                        actor=candidate.get("actor") or "Unknown",
-                        action=candidate.get("action") or "Unknown",
-                        object=candidate.get("object"),
+                        actor=_optional_text(candidate.get("actor"), max_length=500) or "Unknown",
+                        action=_optional_text(candidate.get("action")) or "Unknown",
+                        object=_optional_text(candidate.get("object")),
                         conditions=_as_json_list(candidate.get("conditions")),
                         exceptions=_as_json_list(candidate.get("exceptions")),
-                        frequency=candidate.get("frequency"),
-                        deadline_description=candidate.get("deadline_description"),
+                        frequency=_optional_text(raw_frequency, max_length=100),
+                        deadline_description=_optional_text(
+                            candidate.get("deadline_description")
+                        ),
                         risk_level=risk_level,
                         risk_factors={
                             "model_self_confidence": candidate.get("self_confidence"),
                             "extraction_difficulty": candidate.get("difficulty"),
+                            "untruncated_frequency": (
+                                raw_frequency if raw_frequency and len(raw_frequency) > 100 else None
+                            ),
                         },
                         extraction_method="agentic_full_section",
                         extraction_run_id=run.id,
-                        prompt_version="obligation_extractor@1.0-full-section",
-                        model=get_settings().reasoning_model_name,
+                        prompt_version=PROMPT_VERSION,
+                        model=provenance["model"],
                         citation_coordinates={
-                            "section_number": section.number,
-                            "section_char_start": section.char_start,
-                            "section_char_end": section.char_end,
+                            "section_number": section.section_number,
+                            "chunk_index": section.chunk_index,
+                            "chunk_count": section.chunk_count,
+                            "chunk_char_start": section.char_start,
+                            "chunk_char_end": section.char_end,
+                            "provider": provenance["provider"],
+                            "corpus_run_id": provenance["corpus_run_id"],
+                            "run_config_hash": provenance["run_config_hash"],
                         },
                         validation_status="pending",
                         status=ObligationStatus.CANDIDATE,
@@ -500,6 +702,10 @@ async def _publish_atomically(
                         )
                     db.add(obligation)
                     inserted += 1
+                # Bound PostgreSQL/asyncpg statement parameter counts. The transaction remains
+                # atomic, but SQLAlchemy cannot aggregate thousands of wide obligation rows into
+                # one INSERT at commit time (asyncpg caps a statement at 32,767 parameters).
+                await db.flush()
 
             run_db = await db.get(ExtractionRun, run.id)
             if run_db is None:
@@ -514,8 +720,11 @@ async def _publish_atomically(
             run_db.approved_obligations = 0
             run_db.rejected_obligations = 0
             run_db.review_pending = inserted
-            document.status = DocumentStatus.PROCESSED
-            document.processing_error = None
+            document_db = await db.get(RegulatoryDocument, document.id)
+            if document_db is None:
+                raise RuntimeError(f"Document disappeared: {document.id}")
+            document_db.status = DocumentStatus.PROCESSED
+            document_db.processing_error = None
             counts[document.title] = inserted
 
         await db.commit()
@@ -523,6 +732,7 @@ async def _publish_atomically(
 
 
 async def main() -> int:
+    run_config = _run_config()
     async with async_session_maker() as db:
         documents = (
             (
@@ -538,10 +748,18 @@ async def main() -> int:
     if [document.title for document in documents] != list(DOCUMENT_TITLES):
         raise RuntimeError("Both real circular documents must be present in the database")
 
+    corpus_run_id = await _resolve_corpus_run_id(documents, run_config)
+    print(
+        "FULL CORPUS RUN CONFIG: "
+        f"provider={run_config['provider']} model={run_config['model']} "
+        f"corpus_run_id={corpus_run_id} config={run_config['hash']}",
+        flush=True,
+    )
     runs: list[ExtractionRun] = []
     for document in documents:
-        runs.append(await _extract_document(document))
+        runs.append(await _extract_document(document, corpus_run_id, run_config))
 
+    assert_consistent_run_provenance(runs)
     counts = await _publish_atomically(documents, runs)
     for title, count in counts.items():
         print(f"{title}: {count} obligations published pending verification", flush=True)

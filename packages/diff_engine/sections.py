@@ -21,7 +21,9 @@ from packages.diff_engine.types import SectionUnit
 _ROMAN_PART = re.compile(r"^\s*[IVXL]+\.\s")
 _TOC_ENTRY = re.compile(r"^\s*(\d{1,3})\.\s*(.*)$")
 _PAGE_NO = re.compile(r"^\s*(\d{1,3})\s*$")
-_BODY_HEADING = re.compile(r"(?m)^[ \t]*(\d{1,3})\.[ \t]+([A-Z][^\n]{3,})")
+_BODY_HEADING = re.compile(
+    r"(?m)^[ \t]*(\d{1,3})\.[ \t]*(?:\n[ \t]*)?(\S[^\n]{3,})"
+)
 
 
 def parse_toc(text: str) -> dict[int, str]:
@@ -73,25 +75,68 @@ def parse_toc(text: str) -> dict[int, str]:
 def locate_body_spans(text: str) -> dict[int, tuple[int, int]]:
     """Locate each top-level section's body span ``{number: (char_start, char_end)}``.
 
-    A body heading is ``N. Title…`` followed, within ~900 chars, by its own first sub-clause
-    ``N.1`` — this discriminates real body headings from TOC entries (followed by page numbers)
-    and from sub-clauses. ``char_end`` is the start of the next detected top-level heading.
+    A body heading is ``N. Title…``. The authoritative TOC title selects the matching body
+    occurrence and disambiguates TOC rows and annexures that restart numbering. This also covers
+    source numbering defects where a section is not followed by its own ``N.1`` marker.
+    ``char_end`` is the start of the next selected top-level heading.
     """
-    starts: list[tuple[int, int]] = []  # (number, char_start)
+    toc = parse_toc(text)
+    candidates: dict[int, list[tuple[int, str]]] = {}
     for m in _BODY_HEADING.finditer(text):
         num = int(m.group(1))
-        window = text[m.end(): m.end() + 900]
-        if not re.search(r"\b%d\.1[.\s]" % num, window):
-            continue
-        starts.append((num, m.start()))
+        candidates.setdefault(num, []).append((m.start(), m.group(2)))
 
-    spans: dict[int, tuple[int, int]] = {}
-    for i, (num, start) in enumerate(starts):
-        end = starts[i + 1][1] if i + 1 < len(starts) else len(text)
-        # Keep the longest (real body over any short part-intro duplicate) per number.
-        if num not in spans or (end - start) > (spans[num][1] - spans[num][0]):
-            spans[num] = (start, end)
-    return spans
+    toc_start = text.find("TABLE OF CONTENTS")
+    first_number = min(toc, default=1)
+    first_subclause = text.find(
+        f"{first_number}.1.", toc_start if toc_start >= 0 else 0
+    )
+    first_section_candidates = [
+        start
+        for start, _ in candidates.get(first_number, [])
+        if first_subclause < 0 or start < first_subclause
+    ]
+    body_region_start = max(first_section_candidates, default=0)
+
+    # Annexures restart numbering at 1 and contain their own ``N.1`` children. Choosing the
+    # longest same-numbered span therefore maps top-level sections to unrelated annexures.
+    # The TOC title is authoritative: choose the heading whose normalized line is the best
+    # prefix match, then form spans only from those chosen top-level headings.
+    chosen: list[tuple[int, int]] = []
+    for num, title in toc.items():
+        expected = normalize_for_match(title)
+
+        def score(
+            candidate: tuple[int, str], expected_title: str = expected
+        ) -> tuple[int, float, int]:
+            start, heading = candidate
+            actual = re.sub(r"\s+\d+$", "", normalize_for_match(heading)).strip()
+            prefix = int(
+                expected_title.startswith(actual) or actual.startswith(expected_title)
+            )
+            expected_tokens = set(expected_title.split())
+            actual_tokens = set(actual.split())
+            overlap = len(expected_tokens & actual_tokens) / max(
+                1, len(expected_tokens | actual_tokens)
+            )
+            # TOC candidates are already excluded by ``body_region_start``. Prefer the first
+            # equally strong body heading so later annexure repetitions cannot win a tie.
+            return prefix, overlap, -start
+
+        options = [
+            candidate
+            for candidate in candidates.get(num, [])
+            if candidate[0] >= body_region_start
+        ]
+        if options:
+            start, _ = max(options, key=score)
+            chosen.append((num, start))
+
+    chosen.sort(key=lambda item: item[1])
+    return {
+        num: (start, chosen[index + 1][1] if index + 1 < len(chosen) else len(text))
+        for index, (num, start) in enumerate(chosen)
+    }
 
 
 def assign_to_sections(

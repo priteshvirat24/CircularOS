@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DocumentClassification(BaseModel):
@@ -105,3 +105,28 @@ class CriticAssessment(BaseModel):
         description="Specific objection, or null when no substantive objection exists"
     )
     reasoning: str = Field(description="Short explanation grounded only in the supplied source")
+
+
+class CandidateVerificationAssessment(BaseModel):
+    """Groq's two bounded signals for one candidate in a source-context batch."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    obligation_id: str = Field(alias="id")
+    entailment_label: Literal["entailment", "neutral", "contradiction"] = Field(alias="el")
+    entailment_score: float = Field(ge=0.0, le=1.0, alias="es")
+    entailment_reason_code: Literal["supported", "insufficient", "contradicted"] = Field(
+        alias="er"
+    )
+    critic_has_substantive_objection: bool = Field(alias="co")
+    critic_reason_code: Literal[
+        "none", "invented", "reversed", "omitted", "overstated", "ambiguous"
+    ] = Field(alias="cr")
+
+
+class VerificationBatchResult(BaseModel):
+    """One independent-model call covering several candidates from the same source chunk."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    assessments: list[CandidateVerificationAssessment] = Field(alias="a")

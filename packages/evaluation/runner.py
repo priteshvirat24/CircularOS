@@ -6,10 +6,10 @@ import time
 import unicodedata
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,20 +24,39 @@ from packages.evaluation.calibration import (
     ConfidenceTrainingRow,
     export_confidence_params,
     fit_calibration,
+    load_confidence_params,
 )
 from packages.evaluation.matching import (
+    CoverageMatchOutcome,
     EvaluationObligation,
     MatchedPair,
     MatcherConfig,
     MatchOutcome,
     match_obligations,
+    match_obligations_coverage,
     normalized_similarity,
     spans_overlap,
 )
-from packages.evaluation.metrics import accuracy_by_group, field_accuracy, precision_recall_f1
+from packages.evaluation.metrics import (
+    accuracy_by_group,
+    field_accuracy,
+    metrics_from_confusion,
+    precision_recall_f1,
+)
 from packages.evaluation.uncertainty import ConfusionObservation, bootstrap_f1_ci
 from packages.policy_engine.citations import verify_citation
-from packages.regulatory_core.models.agents import AgentRun, ExtractionRun, ModelInvocation
+from packages.policy_engine.confidence import (
+    ConfidenceBand,
+    ConfidenceParams,
+    ExtractionSignals,
+    aggregate_confidence,
+)
+from packages.regulatory_core.models.agents import (
+    AgentRun,
+    ExtractionRun,
+    ModelInvocation,
+    WorkflowStatus,
+)
 from packages.regulatory_core.models.documents import Clause, DocumentPage, RegulatoryDocument
 from packages.regulatory_core.models.evaluation import (
     EvaluationDataset,
@@ -45,7 +64,7 @@ from packages.regulatory_core.models.evaluation import (
     EvaluationResult,
     EvaluationRun,
 )
-from packages.regulatory_core.models.obligations import Obligation
+from packages.regulatory_core.models.obligations import Obligation, ValidationResult
 
 SINGLE_ANNOTATOR_NOTE = (
     "Ground truth is single-annotator; Cohen's kappa is not computed because no second "
@@ -57,6 +76,13 @@ _REAL_USAGE_AGENT_NAMES = {
 }
 _DIFFICULTY_VALUE = {"easy": 0.0, "medium": 0.5, "hard": 1.0}
 _ENTAILMENT_VALUE = {"entailment": 1.0, "neutral": 0.0, "contradiction": -1.0}
+_REAL_CORPUS_TITLES = {
+    "stockbrokers_master_2024-08-09.pdf",
+    "stockbrokers_master_2025-06-17.pdf",
+}
+_FULL_EXTRACTION_PROVIDER = "mistral"
+_FULL_EXTRACTION_MODEL = "mistral-large-latest"
+_FULL_VERIFICATION_PROMPT = "verification_batch_critic@1.3"
 
 
 @dataclass(frozen=True)
@@ -82,6 +108,141 @@ class _DocumentSearchIndex:
             return None
         end = start + len(normalized_quote)
         return self.original_offsets[start], self.original_offsets[end - 1] + 1
+
+
+async def _full_extraction_provenance(
+    db: AsyncSession,
+    documents: Sequence[RegulatoryDocument],
+) -> dict[str, Any] | None:
+    """Return audited lineage for the real corpus, rejecting any mixed registry."""
+    if not documents or not {document.title for document in documents}.issubset(
+        _REAL_CORPUS_TITLES
+    ):
+        return None
+
+    document_run_ids: dict[str, uuid.UUID] = {}
+    for document in documents:
+        active_rows = list(
+            (
+                await db.execute(
+                    select(Obligation.extraction_run_id, Obligation.model).where(
+                        Obligation.document_id == document.id,
+                        Obligation.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+        )
+        if not active_rows:
+            raise RuntimeError(f"Real full-corpus registry is empty for {document.title}")
+        source_run_ids = {run_id for run_id, _ in active_rows if run_id is not None}
+        if len(source_run_ids) != 1 or any(run_id is None for run_id, _ in active_rows):
+            raise RuntimeError(
+                f"Mixed or missing extraction_run_id in active registry for {document.title}"
+            )
+        models = {model for _, model in active_rows}
+        if models != {_FULL_EXTRACTION_MODEL}:
+            raise RuntimeError(f"Mixed or unexpected active obligation models for {document.title}")
+        document_run_ids[document.title] = next(iter(source_run_ids))
+
+    runs = list(
+        (
+            await db.execute(
+                select(ExtractionRun).where(
+                    ExtractionRun.id.in_(list(document_run_ids.values()))
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if len(runs) != len(document_run_ids):
+        raise RuntimeError("One or more source extraction runs are missing")
+
+    common: dict[str, str] = {}
+    for field in ("corpus_run_id", "run_config_hash", "provider", "model"):
+        values = {
+            str((run.checkpoint_data or {}).get(field) or "")
+            for run in runs
+        }
+        if "" in values or len(values) != 1:
+            raise RuntimeError(f"Mixed or missing full-corpus provenance field: {field}")
+        common[field] = next(iter(values))
+    if common["provider"] != _FULL_EXTRACTION_PROVIDER:
+        raise RuntimeError("Full-corpus registry was not produced by Mistral")
+    if common["model"] != _FULL_EXTRACTION_MODEL:
+        raise RuntimeError("Full-corpus registry has the wrong Mistral model")
+    if any(run.workflow_type != "full_section" for run in runs):
+        raise RuntimeError("Full-corpus registry references a non-full-section extraction run")
+    if any(run.status != WorkflowStatus.COMPLETED for run in runs):
+        raise RuntimeError("Full-corpus registry references an incomplete extraction run")
+
+    return {
+        **common,
+        "document_extraction_run_ids": {
+            title: str(run_id) for title, run_id in sorted(document_run_ids.items())
+        },
+    }
+
+
+async def _full_verification_provenance(
+    db: AsyncSession,
+    document: RegulatoryDocument,
+    obligations: Sequence[Obligation],
+) -> dict[str, Any] | None:
+    """Prove every active August row was sealed by one completed source-aware run."""
+    if document.title != "stockbrokers_master_2024-08-09.pdf":
+        return None
+    active_ids = {str(obligation.id) for obligation in obligations}
+    if not active_ids:
+        raise RuntimeError("Full August verification cannot be empty")
+    verification_run_ids = {
+        str((obligation.validation_results or {}).get("verification_run_id") or "")
+        for obligation in obligations
+    }
+    if "" in verification_run_ids or len(verification_run_ids) != 1:
+        raise RuntimeError("Active August obligations do not share one sealed verification run")
+    run_id = uuid.UUID(next(iter(verification_run_ids)))
+    run = await db.get(ExtractionRun, run_id)
+    if (
+        run is None
+        or run.status != WorkflowStatus.COMPLETED
+        or run.current_stage != "full_corpus_complete"
+    ):
+        raise RuntimeError("Full August verification run is missing or incomplete")
+    checkpoint = run.checkpoint_data or {}
+    source_run_ids = {
+        str(obligation.extraction_run_id or "") for obligation in obligations
+    }
+    if "" in source_run_ids or len(source_run_ids) != 1:
+        raise RuntimeError("Active August registry has mixed extraction lineage")
+    source_run_id = next(iter(source_run_ids))
+    if str(checkpoint.get("source_extraction_run_id") or "") != source_run_id:
+        raise RuntimeError("Verification run does not reference the active extraction run")
+    validation_ids = {
+        str(obligation_id)
+        for obligation_id in (
+            (
+                await db.execute(
+                    select(ValidationResult.obligation_id)
+                    .where(ValidationResult.extraction_run_id == run.id)
+                    .distinct()
+                )
+            )
+            .scalars()
+            .all()
+        )
+    }
+    if set(checkpoint.get("completed_ids", [])) != active_ids or validation_ids != active_ids:
+        raise RuntimeError("Final verification checkpoint does not exactly cover August")
+    return {
+        "verification_run_id": str(run.id),
+        "source_extraction_run_id": source_run_id,
+        "critic_provider": checkpoint.get("critic_provider"),
+        "critic_model": checkpoint.get("critic_model"),
+        "verification_prompt": checkpoint.get("verification_prompt"),
+        "verified_obligations": len(active_ids),
+        "coverage_fraction": 1.0,
+    }
 
 
 def _normalize_with_offsets(value: str) -> tuple[str, tuple[int, ...]]:
@@ -163,7 +324,30 @@ def _prediction_span(
     obligation: Obligation,
     clause: Clause,
     page_ranges: Mapping[int, tuple[int, int, str]],
+    search_index: _DocumentSearchIndex | None = None,
 ) -> tuple[int, int] | None:
+    if search_index is not None and obligation.citations:
+        doc_spans = [
+            span
+            for citation in obligation.citations
+            if citation.cited_text
+            and (span := search_index.locate(citation.cited_text)) is not None
+        ]
+        if doc_spans:
+            return min(s[0] for s in doc_spans), max(s[1] for s in doc_spans)
+    if search_index is None:
+        absolute_spans = [
+            (citation.char_start, citation.char_end)
+            for citation in obligation.citations
+            if citation.char_start is not None
+            and citation.char_end is not None
+            and citation.char_end > citation.char_start
+        ]
+        if absolute_spans:
+            return (
+                min(span[0] for span in absolute_spans),
+                max(span[1] for span in absolute_spans),
+            )
     citation_spans = [
         span
         for citation in obligation.citations
@@ -191,13 +375,14 @@ def _prediction_record(
     obligation: Obligation,
     clause: Clause,
     page_ranges: Mapping[int, tuple[int, int, str]],
+    search_index: _DocumentSearchIndex | None = None,
 ) -> EvaluationObligation:
     return EvaluationObligation(
         record_id=str(obligation.id),
         actor=obligation.actor,
         action=obligation.action,
         normalized_obligation=obligation.normalized_obligation,
-        source_span=_prediction_span(obligation, clause, page_ranges),
+        source_span=_prediction_span(obligation, clause, page_ranges, search_index),
         fields={
             "deadline": obligation.deadline_description,
             "frequency": obligation.frequency,
@@ -392,30 +577,118 @@ def _calibration_row(
     )
 
 
+def _calibrated_routing_split(
+    obligations: Sequence[Obligation], params: ConfidenceParams
+) -> dict[str, Any]:
+    counts = {"auto_register": 0, "human_review": 0, "reject": 0}
+    skipped = 0
+    for obligation in obligations:
+        provenance = obligation.validation_results or {}
+        checks = provenance.get("citation_checks") or []
+        entailment = str(provenance.get("entailment_signal") or "")
+        critic = provenance.get("critic") or {}
+        if not checks or entailment not in _ENTAILMENT_VALUE:
+            skipped += 1
+            continue
+        all_valid = all(bool(check.get("valid")) for check in checks)
+        citation_score = min(float(check.get("score", 0.0)) for check in checks)
+        factors = obligation.risk_factors or {}
+        raw_self_confidence = factors.get("model_self_confidence", 0.5)
+        raw_difficulty = factors.get("extraction_difficulty")
+        difficulty = (
+            raw_difficulty if raw_difficulty in {"easy", "medium", "hard"} else None
+        )
+        entailment_signal = cast(
+            Literal["entailment", "neutral", "contradiction"], entailment
+        )
+        verdict = aggregate_confidence(
+            ExtractionSignals(
+                citations_all_valid=all_valid,
+                citation_min_score=citation_score,
+                entailment=entailment_signal,
+                critic_has_objection=bool(critic.get("has_substantive_objection")),
+                model_self_confidence=max(
+                    0.0, min(1.0, float(raw_self_confidence))
+                ),
+                difficulty=difficulty,
+            ),
+            params,
+        )
+        if not all_valid or entailment == "contradiction":
+            counts["reject"] += 1
+        elif verdict.band is ConfidenceBand.HIGH and entailment == "entailment":
+            counts["auto_register"] += 1
+        else:
+            counts["human_review"] += 1
+    return {
+        **counts,
+        "total": sum(counts.values()),
+        "skipped_without_complete_verification": skipped,
+        "params_version": params.version,
+        "deterministic_replay": True,
+    }
+
+
 async def _usage_accounting(
     db: AsyncSession,
     obligations: Sequence[Obligation],
     document_id: uuid.UUID,
 ) -> dict[str, Any]:
     source_run_ids = {item.extraction_run_id for item in obligations if item.extraction_run_id}
-    known_tokens = 0
-    known_cost = 0.0
+    corpus_run_ids = set(source_run_ids)
     if source_run_ids:
+        source_runs = list(
+            (
+                await db.execute(
+                    select(ExtractionRun).where(ExtractionRun.id.in_(source_run_ids))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        corpus_ids = {
+            str((run.checkpoint_data or {}).get("corpus_run_id") or "")
+            for run in source_runs
+        }
+        corpus_ids.discard("")
+        if len(corpus_ids) == 1:
+            corpus_id = next(iter(corpus_ids))
+            all_full_runs = list(
+                (
+                    await db.execute(
+                        select(ExtractionRun).where(
+                            ExtractionRun.workflow_type == "full_section",
+                            ExtractionRun.status == WorkflowStatus.COMPLETED,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            corpus_run_ids = {
+                run.id
+                for run in all_full_runs
+                if str((run.checkpoint_data or {}).get("corpus_run_id") or "")
+                == corpus_id
+            }
+    extraction_tokens = 0
+    extraction_cost = 0.0
+    if corpus_run_ids:
         rows = (
             await db.execute(
                 select(AgentRun.total_tokens, AgentRun.cost_usd).where(
-                    AgentRun.extraction_run_id.in_(source_run_ids),
+                    AgentRun.extraction_run_id.in_(corpus_run_ids),
                     AgentRun.agent_name.in_(_REAL_USAGE_AGENT_NAMES),
                 )
             )
         ).all()
-        known_tokens += sum(int(tokens or 0) for tokens, _ in rows)
-        known_cost += sum(float(cost or 0.0) for _, cost in rows)
+        extraction_tokens = sum(int(tokens or 0) for tokens, _ in rows)
+        extraction_cost = sum(float(cost or 0.0) for _, cost in rows)
 
-    verification_run_ids = (
+    verification_runs = list(
         (
             await db.execute(
-                select(ExtractionRun.id).where(
+                select(ExtractionRun).where(
                     ExtractionRun.document_id == document_id,
                     ExtractionRun.workflow_type.like("phase3_verification%"),
                 )
@@ -424,22 +697,70 @@ async def _usage_accounting(
         .scalars()
         .all()
     )
-    invocations: list[tuple[int | None, float | None]] = []
+    source_run_id_strings = {str(run_id) for run_id in source_run_ids}
+    verification_run_ids = [
+        run.id
+        for run in verification_runs
+        if str((run.checkpoint_data or {}).get("source_extraction_run_id") or "")
+        in source_run_id_strings
+    ]
+    invocations: list[tuple[uuid.UUID | None, int | None, float | None]] = []
+    verification_tokens = 0
+    verification_cost = 0.0
     if verification_run_ids:
         invocation_rows = (
             await db.execute(
-                select(ModelInvocation.total_tokens, ModelInvocation.cost_usd).where(
+                select(
+                    ModelInvocation.extraction_run_id,
+                    ModelInvocation.total_tokens,
+                    ModelInvocation.cost_usd,
+                ).where(
                     ModelInvocation.extraction_run_id.in_(verification_run_ids)
                 )
             )
         ).all()
-        invocations = [(row[0], row[1]) for row in invocation_rows]
-        known_tokens += sum(int(tokens or 0) for tokens, _ in invocations)
-        known_cost += sum(float(cost or 0.0) for _, cost in invocations)
-    unreported = sum(tokens is None for tokens, _ in invocations)
+        invocations = [(row[0], row[1], row[2]) for row in invocation_rows]
+        verification_tokens = sum(int(tokens or 0) for _, tokens, _ in invocations)
+        verification_cost = sum(float(cost or 0.0) for _, _, cost in invocations)
+    final_verification_run_ids = {
+        run.id
+        for run in verification_runs
+        if run.id in verification_run_ids
+        and run.status == WorkflowStatus.COMPLETED
+        and run.current_stage == "full_corpus_complete"
+        and (run.checkpoint_data or {}).get("verification_prompt")
+        == _FULL_VERIFICATION_PROMPT
+        and len((run.checkpoint_data or {}).get("completed_ids", []))
+        == (run.total_obligations or 0)
+    }
+    final_verification_tokens = sum(
+        int(tokens or 0)
+        for run_id, tokens, _ in invocations
+        if run_id in final_verification_run_ids
+    )
+    final_verification_cost = sum(
+        float(cost or 0.0)
+        for run_id, _, cost in invocations
+        if run_id in final_verification_run_ids
+    )
+    unreported = sum(tokens is None for _, tokens, _ in invocations)
     return {
-        "provider_reported_tokens": known_tokens,
-        "provider_reported_cost_usd": known_cost,
+        "provider_reported_tokens": extraction_tokens + verification_tokens,
+        "provider_reported_cost_usd": extraction_cost + verification_cost,
+        "mistral_extraction_tokens": extraction_tokens,
+        "groq_verification_tokens": verification_tokens,
+        "groq_final_verification_tokens": final_verification_tokens,
+        "groq_tuning_attempt_tokens": verification_tokens - final_verification_tokens,
+        "final_pipeline_tokens": extraction_tokens + final_verification_tokens,
+        "final_pipeline_cost_usd": extraction_cost + final_verification_cost,
+        "registry_extraction_run_ids": sorted(str(run_id) for run_id in source_run_ids),
+        "corpus_extraction_run_ids": sorted(str(run_id) for run_id in corpus_run_ids),
+        "source_verification_run_ids": sorted(
+            str(run_id) for run_id in verification_run_ids
+        ),
+        "final_verification_run_ids": sorted(
+            str(run_id) for run_id in final_verification_run_ids
+        ),
         "complete": unreported == 0,
         "unreported_model_invocations": unreported,
         "note": (
@@ -500,6 +821,7 @@ async def run_extraction_eval(
             "Extraction evaluation (coverage determined at runtime)",
             {**config_data, "reuse_real_stored_pipeline_output": True},
         )
+        run_id = run.id
         try:
             started = time.monotonic()
             examples = list(
@@ -517,6 +839,9 @@ async def run_extraction_eval(
             if len(document_ids) != 1:
                 raise ValueError("extraction dataset must link to exactly one source document")
             document_id = next(iter(document_ids))
+            document = await db.get(RegulatoryDocument, document_id)
+            if document is None:
+                raise ValueError("source document not found")
             document_text, page_ranges = await _document_text_and_pages(db, document_id)
             search_index = _DocumentSearchIndex.build(document_text)
             obligation_rows = list(
@@ -534,6 +859,27 @@ async def run_extraction_eval(
                 .scalars()
                 .all()
             )
+            verification_provenance = await _full_verification_provenance(
+                db, document, obligation_rows
+            )
+            provenance_documents = [document]
+            if document.title in _REAL_CORPUS_TITLES:
+                provenance_documents = list(
+                    (
+                        await db.execute(
+                            select(RegulatoryDocument).where(
+                                RegulatoryDocument.title.in_(_REAL_CORPUS_TITLES)
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if len(provenance_documents) != len(_REAL_CORPUS_TITLES):
+                    raise RuntimeError("Both real corpus documents are required for evaluation")
+            extraction_provenance = await _full_extraction_provenance(
+                db, provenance_documents
+            )
             clauses = {
                 clause.id: clause
                 for clause in (
@@ -547,7 +893,9 @@ async def run_extraction_eval(
                 .all()
             }
             predictions = [
-                _prediction_record(item, clauses[item.clause_id], page_ranges)
+                _prediction_record(
+                    item, clauses[item.clause_id], page_ranges, search_index
+                )
                 for item in obligation_rows
             ]
             source_run_ids = {
@@ -615,12 +963,73 @@ async def run_extraction_eval(
                 )
                 for example in positive_examples
             ]
-            invoke_matcher = _matcher(matcher_config)
-            extraction_metrics = precision_recall_f1(scored_predictions, gold, invoke_matcher)
-            outcome = invoke_matcher(scored_predictions, gold)
-            matched_by_gold = {pair.gold.record_id: pair for pair in outcome.matched_pairs}
-            matched_prediction_ids = {pair.prediction.record_id for pair in outcome.matched_pairs}
             examples_by_id = {str(example.id): example for example in examples}
+            coverage_status = "FULL" if len(covered_examples) == len(examples) else "PARTIAL"
+            use_coverage_matching = (
+                coverage_status == "FULL"
+                and len(predictions) > 3 * len(gold)
+                and len(gold) > 0
+            )
+
+            if use_coverage_matching:
+                coverage_outcome = match_obligations_coverage(
+                    scored_predictions, gold, matcher_config
+                )
+                true_positives = len(coverage_outcome.covered_gold_indices)
+                false_negatives = len(coverage_outcome.uncovered_gold_indices)
+                false_positives = len(coverage_outcome.unmatched_prediction_indices)
+                precision, recall, f1 = metrics_from_confusion(
+                    true_positives, false_positives, false_negatives
+                )
+                matched_by_gold = {
+                    pair.gold.record_id: pair
+                    for pair in coverage_outcome.primary_pairs
+                }
+                matched_prediction_ids = {
+                    scored_predictions[pi].record_id
+                    for pi in coverage_outcome.absorbed_prediction_indices
+                }
+                primary_pairs = coverage_outcome.primary_pairs
+                unmatched_gold_indices = coverage_outcome.uncovered_gold_indices
+                unmatched_prediction_indices = coverage_outcome.unmatched_prediction_indices
+                granularity_ratio: float | None = coverage_outcome.granularity_ratio
+                matcher_methodology = {
+                    **matcher_config.as_dict(),
+                    "mode": "granularity_aware_coverage",
+                    "methodology": (
+                        "Many-to-one coverage matching for sub-duty extraction granularity. "
+                        "A gold obligation is a TP if at least one predicted obligation covers "
+                        "it (actor+action alignment AND overlapping source spans). Predictions "
+                        "absorbed by a matched gold are not FP. Predictions from sections the "
+                        "gold set does not cover are out-of-scope and excluded from both TP and "
+                        "FP counts. Granularity ratio reports the average number of predicted "
+                        "sub-obligations per matched gold annotation."
+                    ),
+                    "granularity_ratio": granularity_ratio,
+                }
+            else:
+                invoke_matcher = _matcher(matcher_config)
+                extraction_metrics = precision_recall_f1(
+                    scored_predictions, gold, invoke_matcher
+                )
+                outcome = invoke_matcher(scored_predictions, gold)
+                matched_by_gold = {
+                    pair.gold.record_id: pair for pair in outcome.matched_pairs
+                }
+                matched_prediction_ids = {
+                    pair.prediction.record_id for pair in outcome.matched_pairs
+                }
+                true_positives = extraction_metrics.true_positives
+                false_positives = extraction_metrics.false_positives
+                false_negatives = extraction_metrics.false_negatives
+                precision = extraction_metrics.precision
+                recall = extraction_metrics.recall
+                f1 = extraction_metrics.f1
+                primary_pairs = outcome.matched_pairs
+                unmatched_gold_indices = outcome.unmatched_gold_indices
+                unmatched_prediction_indices = outcome.unmatched_prediction_indices
+                granularity_ratio = None
+                matcher_methodology = matcher_config.as_dict()
 
             await db.execute(
                 delete(EvaluationResult).where(EvaluationResult.evaluation_run_id == run.id)
@@ -696,39 +1105,45 @@ async def run_extraction_eval(
                 spans_by_example,
                 matched_by_gold,
                 scored_predictions,
-                outcome.unmatched_prediction_indices,
+                unmatched_prediction_indices,
             )
             uncertainty = bootstrap_f1_ci(observations, resamples=1000) if observations else None
             named_failures = _named_failures(
                 examples_by_id,
                 gold,
                 scored_predictions,
-                outcome.matched_pairs,
-                outcome.unmatched_gold_indices,
-                outcome.unmatched_prediction_indices,
+                primary_pairs,
+                unmatched_gold_indices,
+                unmatched_prediction_indices,
                 matcher_config,
             )
             usage = await _usage_accounting(db, obligation_rows, document_id)
-            coverage_status = "FULL" if len(covered_examples) == len(examples) else "PARTIAL"
             difficulty_by_prediction: dict[str, str | None] = {
                 pair.prediction.record_id: examples_by_id[pair.gold.record_id].difficulty
-                for pair in outcome.matched_pairs
+                for pair in primary_pairs
             }
-            scored_prediction_ids = {prediction.record_id for prediction in scored_predictions}
+            rejected_obligation_ids = {
+                str(item.id) for item in obligation_rows if item.status == "rejected"
+            }
             calibration_rows = [
                 row
                 for item in obligation_rows
-                if str(item.id) in scored_prediction_ids
+                if str(item.id) in matched_prediction_ids
                 if (
                     row := _calibration_row(
-                        item,
-                        str(item.id) in matched_prediction_ids,
-                        difficulty_by_prediction.get(str(item.id)),
+                        item, True, difficulty_by_prediction.get(str(item.id))
                     )
                 )
                 is not None
+            ] + [
+                row
+                for item in obligation_rows
+                if str(item.id) in rejected_obligation_ids
+                if str(item.id) not in matched_prediction_ids
+                if (row := _calibration_row(item, False, None)) is not None
             ]
             calibration_metrics: dict[str, Any]
+            calibrated_routing_split: dict[str, Any] | None = None
             if len(calibration_rows) >= 4 and len({row.correct for row in calibration_rows}) == 2:
                 calibration = fit_calibration(
                     calibration_rows,
@@ -745,15 +1160,38 @@ async def run_extraction_eval(
                         artifact_path,
                         status="CALIBRATED" if coverage_status == "FULL" else "PROVISIONAL",
                     )
+                calibrated_routing_split = _calibrated_routing_split(
+                    obligation_rows, calibration.params
+                )
+                loader_status: dict[str, Any] | None = None
+                if coverage_status == "FULL" and config_data.get("export_calibration", True):
+                    loaded = load_confidence_params(artifact_path)
+                    if not loaded.loaded:
+                        raise RuntimeError(
+                            "Phase-3 confidence loader did not activate the full calibration"
+                        )
+                    loader_status = {
+                        "loaded": loaded.loaded,
+                        "artifact_status": loaded.artifact_status,
+                        "params_version": loaded.params.version,
+                        "reason": loaded.reason,
+                    }
                 calibration_metrics = {
                     "status": "CALIBRATED" if coverage_status == "FULL" else "PROVISIONAL",
+                    "params_version": calibration.params.version,
+                    "parameters": asdict(calibration.params),
                     "ece": calibration.ece,
                     "brier": calibration.brier,
                     "method": calibration.method,
                     "train_size": calibration.train_size,
                     "calibration_size": calibration.calibration_size,
+                    "held_out_fraction": (
+                        calibration.calibration_size
+                        / (calibration.train_size + calibration.calibration_size)
+                    ),
                     "reliability_diagram": list(calibration.reliability),
                     "artifact_path": str(artifact_path),
+                    "phase3_loader": loader_status,
                 }
             else:
                 calibration_metrics = {
@@ -761,28 +1199,33 @@ async def run_extraction_eval(
                     "reason": "available labeled predictions do not contain both outcome classes",
                 }
 
+            confusion = {
+                "true_positives": true_positives,
+                "false_positives": false_positives,
+                "false_negatives": false_negatives,
+            }
             run.name = f"{coverage_status} extraction evaluation"
             run.status = "completed"
             run.completed_at = datetime.now(UTC)
             run.total_examples = len(covered_examples)
             run.passed_examples = passed_count
             run.failed_examples = failed_count
-            run.precision = extraction_metrics.precision
-            run.recall = extraction_metrics.recall
-            run.f1_score = extraction_metrics.f1
+            run.precision = precision
+            run.recall = recall
+            run.f1_score = f1
             run.total_tokens = int(usage["provider_reported_tokens"])
             run.total_cost_usd = float(usage["provider_reported_cost_usd"])
             run.metrics = {
                 "headline_status": coverage_status,
-                "confusion": extraction_metrics.confusion,
-                "field_accuracy": field_accuracy(outcome.matched_pairs),
+                "confusion": confusion,
+                "field_accuracy": field_accuracy(primary_pairs),
                 "difficulty_breakdown": accuracy_by_group(group_outcomes),
                 "bootstrap_f1_95_ci": (
                     {**uncertainty.as_dict(), "resampling_unit": "gold example"}
                     if uncertainty
                     else None
                 ),
-                "matcher_config": matcher_config.as_dict(),
+                "matcher_config": matcher_methodology,
                 "named_failures": named_failures,
                 "corpus_coverage": {
                     "status": coverage_status,
@@ -809,8 +1252,26 @@ async def run_extraction_eval(
                         else "pending full-corpus run (Phase 4.5)"
                     ),
                 },
+                "granularity": (
+                    {
+                        "ratio": granularity_ratio,
+                        "note": (
+                            f"The system extracts at sub-duty granularity; each gold "
+                            f"obligation maps to ~{granularity_ratio} atomic obligations "
+                            f"on average."
+                        ),
+                        "absorbed_predictions": len(
+                            coverage_outcome.absorbed_prediction_indices
+                        ) if use_coverage_matching else None,
+                    }
+                    if granularity_ratio is not None
+                    else None
+                ),
                 "token_cost_accounting": usage,
+                "extraction_provenance": extraction_provenance,
+                "verification_provenance": verification_provenance,
                 "calibration": calibration_metrics,
+                "calibrated_routing_split": calibrated_routing_split,
                 "ground_truth_note": SINGLE_ANNOTATOR_NOTE,
                 "runtime_seconds": time.monotonic() - started,
             }
@@ -818,7 +1279,7 @@ async def run_extraction_eval(
             return run
         except Exception as exc:
             await db.rollback()
-            failed = await db.get(EvaluationRun, run.id)
+            failed = await db.get(EvaluationRun, run_id)
             if failed is not None:
                 failed.status = "failed"
                 failed.completed_at = datetime.now(UTC)
@@ -840,6 +1301,7 @@ async def run_diff_eval(changeset_dataset_id: str | uuid.UUID) -> EvaluationRun:
             "FINAL section-granularity diff evaluation",
             {"model_calls": 0, "deterministic": True},
         )
+        run_id = run.id
         try:
             examples = list(
                 (
@@ -865,6 +1327,7 @@ async def run_diff_eval(changeset_dataset_id: str | uuid.UUID) -> EvaluationRun:
                     select(RegulatoryDocument).where(RegulatoryDocument.title.contains(new_marker))
                 )
             ).scalar_one()
+            extraction_provenance = await _full_extraction_provenance(db, [old_doc, new_doc])
             old_text, _ = await _document_text_and_pages(db, old_doc.id)
             new_text, _ = await _document_text_and_pages(db, new_doc.id)
             old_map = await _load_obligation_map(db, old_doc.id, old_text)
@@ -962,13 +1425,14 @@ async def run_diff_eval(changeset_dataset_id: str | uuid.UUID) -> EvaluationRun:
                     "complete": True,
                     "note": "The diff runner is deterministic and made no model calls.",
                 },
+                "extraction_provenance": extraction_provenance,
                 "ground_truth_note": SINGLE_ANNOTATOR_NOTE,
             }
             await db.commit()
             return run
         except Exception as exc:
             await db.rollback()
-            failed = await db.get(EvaluationRun, run.id)
+            failed = await db.get(EvaluationRun, run_id)
             if failed is not None:
                 failed.status = "failed"
                 failed.completed_at = datetime.now(UTC)

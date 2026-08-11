@@ -201,3 +201,89 @@ def match_obligations(
         tuple(index for index in range(len(predictions)) if index not in used_predictions),
         tuple(index for index in range(len(gold)) if index not in used_gold),
     )
+
+
+@dataclass(frozen=True)
+class CoverageMatchOutcome:
+    """Many-to-one matching for granularity-aware extraction evaluation.
+
+    When the extraction operates at finer granularity than the gold set, one gold
+    obligation may be covered by multiple predicted sub-obligations.  A gold is a TP
+    if *at least one* prediction meets the alignment gates.  Predictions absorbed by
+    a matched gold are not FP.  Unmatched predictions from gold-covered spans are FP.
+    """
+
+    covered_gold_indices: tuple[int, ...]
+    uncovered_gold_indices: tuple[int, ...]
+    absorbed_prediction_indices: tuple[int, ...]
+    unmatched_prediction_indices: tuple[int, ...]
+    gold_to_predictions: tuple[tuple[int, tuple[int, ...]], ...]
+    granularity_ratio: float
+    primary_pairs: tuple[MatchedPair, ...]
+
+
+def match_obligations_coverage(
+    predictions: Sequence[EvaluationObligation],
+    gold: Sequence[EvaluationObligation],
+    config: MatcherConfig = DEFAULT_MATCHER_CONFIG,
+) -> CoverageMatchOutcome:
+    """Many-to-one coverage matching: each gold can absorb multiple predictions.
+
+    For each gold annotation, all predictions that pass the alignment gates (actor,
+    action, obligation similarity, source span overlap) are absorbed.  The gold is a
+    TP if it has at least one absorbed prediction.  The primary pair (highest
+    obligation similarity) is used for field accuracy.
+    """
+    gold_hits: dict[int, list[tuple[int, float, float, float]]] = {
+        gi: [] for gi in range(len(gold))
+    }
+    for pi, pred in enumerate(predictions):
+        for gi, gold_item in enumerate(gold):
+            scores = _candidate(pred, gold_item, config)
+            if scores is not None:
+                gold_hits[gi].append((pi, *scores))
+
+    covered: list[int] = []
+    uncovered: list[int] = []
+    absorbed: set[int] = set()
+    g2p: list[tuple[int, tuple[int, ...]]] = []
+    primary_pairs: list[MatchedPair] = []
+
+    for gi in range(len(gold)):
+        hits = gold_hits[gi]
+        if not hits:
+            uncovered.append(gi)
+            continue
+        covered.append(gi)
+        hits.sort(key=lambda h: (-h[1], -h[2], -h[3], h[0]))
+        pred_indices = tuple(h[0] for h in hits)
+        absorbed.update(pred_indices)
+        g2p.append((gi, pred_indices))
+        best = hits[0]
+        primary_pairs.append(
+            MatchedPair(
+                predictions[best[0]],
+                gold[gi],
+                best[0],
+                gi,
+                best[1],
+                best[2],
+                best[3],
+            )
+        )
+
+    unmatched = tuple(
+        pi for pi in range(len(predictions)) if pi not in absorbed
+    )
+    total_absorbed = sum(len(preds) for _, preds in g2p)
+    ratio = total_absorbed / len(covered) if covered else 0.0
+
+    return CoverageMatchOutcome(
+        covered_gold_indices=tuple(covered),
+        uncovered_gold_indices=tuple(uncovered),
+        absorbed_prediction_indices=tuple(sorted(absorbed)),
+        unmatched_prediction_indices=unmatched,
+        gold_to_predictions=tuple(g2p),
+        granularity_ratio=round(ratio, 2),
+        primary_pairs=tuple(primary_pairs),
+    )

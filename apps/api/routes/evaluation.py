@@ -18,8 +18,8 @@ router = APIRouter()
 @router.get("/runs/{evaluation_run_id}")
 async def get_evaluation_run(
     evaluation_run_id: uuid.UUID,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),  # noqa: B008 — FastAPI dependency injection
+    db: AsyncSession = Depends(get_db),  # noqa: B008 — FastAPI dependency injection
 ) -> dict:
     """Return the persisted evaluation contract; no metric is computed in the route."""
     del user
@@ -53,7 +53,10 @@ async def get_evaluation_run(
         "bootstrap_f1_95_ci": metrics.get("bootstrap_f1_95_ci"),
         "named_failures": metrics.get("named_failures", []),
         "corpus_coverage": metrics.get("corpus_coverage"),
+        "extraction_provenance": metrics.get("extraction_provenance"),
+        "verification_provenance": metrics.get("verification_provenance"),
         "calibration": metrics.get("calibration"),
+        "calibrated_routing_split": metrics.get("calibrated_routing_split"),
         "ground_truth_note": metrics.get("ground_truth_note"),
         "usage": {
             "total_tokens": run.total_tokens,

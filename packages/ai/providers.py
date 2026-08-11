@@ -1,7 +1,7 @@
 """LLM Provider abstraction and routing.
 
-Supports OpenAI, Anthropic, Gemini (with multi-key rotation), and Groq
-(via the OpenAI-compatible endpoint). The routing layer maps three logical
+Supports OpenAI, Anthropic, Gemini (with multi-key rotation), Mistral, and Groq
+(the latter two via OpenAI-compatible endpoints). The routing layer maps three logical
 slots — fast, reasoning, critic — to concrete provider/model pairs set in .env.
 """
 
@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import itertools
 import threading
-from typing import Type
+from typing import Any
 
-from langchain_core.language_models import BaseChatModel
-from pydantic import BaseModel
 import structlog
+from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import Runnable
+from pydantic import BaseModel, SecretStr
 
 from apps.api.config import get_settings
 
@@ -25,7 +26,7 @@ logger = structlog.get_logger()
 # Thread-safe via a lock (the cycle iterator itself is not).
 
 _gemini_pool_lock = threading.Lock()
-_gemini_pool: itertools.cycle | None = None
+_gemini_pool: itertools.cycle[str] | None = None
 _gemini_pool_size: int = 0
 
 
@@ -63,14 +64,14 @@ def _next_gemini_key() -> str:
     with _gemini_pool_lock:
         if _gemini_pool is None:
             _init_gemini_pool()
-        return next(_gemini_pool)  # type: ignore[arg-type]
+        assert _gemini_pool is not None
+        return next(_gemini_pool)
 
 
 # ── Provider constructors ─────────────────────────────────────────────
 
-def get_openai_model(
-    model_name: str, temperature: float = 0.0, **kwargs
-) -> BaseChatModel:
+
+def get_openai_model(model_name: str, temperature: float = 0.0, **kwargs: Any) -> BaseChatModel:
     """Initialize OpenAI chat model."""
     from langchain_openai import ChatOpenAI
 
@@ -81,16 +82,14 @@ def get_openai_model(
     return ChatOpenAI(
         model=model_name,
         temperature=temperature,
-        api_key=settings.openai_api_key,
+        api_key=SecretStr(settings.openai_api_key),
         base_url=settings.openai_base_url,
         max_retries=3,
         **kwargs,
     )
 
 
-def get_anthropic_model(
-    model_name: str, temperature: float = 0.0, **kwargs
-) -> BaseChatModel:
+def get_anthropic_model(model_name: str, temperature: float = 0.0, **kwargs: Any) -> BaseChatModel:
     """Initialize Anthropic chat model."""
     from langchain_anthropic import ChatAnthropic
 
@@ -101,15 +100,13 @@ def get_anthropic_model(
     return ChatAnthropic(
         model_name=model_name,
         temperature=temperature,
-        api_key=settings.anthropic_api_key,
+        api_key=SecretStr(settings.anthropic_api_key),
         max_retries=3,
         **kwargs,
     )
 
 
-def get_gemini_model(
-    model_name: str, temperature: float = 0.0, **kwargs
-) -> BaseChatModel:
+def get_gemini_model(model_name: str, temperature: float = 0.0, **kwargs: Any) -> BaseChatModel:
     """Initialize Google Gemini chat model with automatic key rotation.
 
     Keys rotate round-robin across all configured GEMINI_API_KEY[_N] values.
@@ -128,9 +125,7 @@ def get_gemini_model(
     )
 
 
-def get_groq_model(
-    model_name: str, temperature: float = 0.0, **kwargs
-) -> BaseChatModel:
+def get_groq_model(model_name: str, temperature: float = 0.0, **kwargs: Any) -> BaseChatModel:
     """Initialize Groq chat model via the OpenAI-compatible endpoint.
 
     Groq runs open-source models (Llama, GPT-OSS, Qwen) on LPU hardware at
@@ -141,15 +136,33 @@ def get_groq_model(
 
     settings = get_settings()
     if not settings.groq_api_key:
+        raise ValueError("GROQ_API_KEY is not configured. Get one free at console.groq.com")
+
+    return ChatOpenAI(
+        model=model_name,
+        temperature=temperature,
+        api_key=SecretStr(settings.groq_api_key),
+        base_url="https://api.groq.com/openai/v1",
+        max_retries=3,
+        **kwargs,
+    )
+
+
+def get_mistral_model(model_name: str, temperature: float = 0.0, **kwargs: Any) -> BaseChatModel:
+    """Initialize Mistral La Plateforme through its OpenAI-compatible endpoint."""
+    from langchain_openai import ChatOpenAI
+
+    settings = get_settings()
+    if not settings.mistral_api_key:
         raise ValueError(
-            "GROQ_API_KEY is not configured. Get one free at console.groq.com"
+            "MISTRAL_API_KEY is not configured. Set it before routing a model to Mistral."
         )
 
     return ChatOpenAI(
         model=model_name,
         temperature=temperature,
-        api_key=settings.groq_api_key,
-        base_url="https://api.groq.com/openai/v1",
+        api_key=SecretStr(settings.mistral_api_key),
+        base_url="https://api.mistral.ai/v1",
         max_retries=3,
         **kwargs,
     )
@@ -161,23 +174,24 @@ def get_groq_model(
 # Gemini Flash for reasoning (best structured output on free tier),
 # Groq for fast/critic (high RPD + different model family for the critic).
 _SLOT_DEFAULTS: dict[str, tuple[str, str]] = {
-    "fast":      ("groq",   "openai/gpt-oss-120b"),
+    "fast": ("groq", "openai/gpt-oss-120b"),
     "reasoning": ("gemini", "gemini-2.5-flash"),
-    "critic":    ("groq",   "openai/gpt-oss-120b"),
+    "critic": ("groq", "openai/gpt-oss-120b"),
 }
 
 _PROVIDER_FACTORIES = {
-    "openai":    get_openai_model,
+    "openai": get_openai_model,
     "anthropic": get_anthropic_model,
-    "gemini":    get_gemini_model,
-    "groq":      get_groq_model,
+    "gemini": get_gemini_model,
+    "groq": get_groq_model,
+    "mistral": get_mistral_model,
 }
 
 
 def get_llm(
     routing_type: str = "reasoning",
     temperature: float = 0.0,
-    **kwargs,
+    **kwargs: Any,
 ) -> BaseChatModel:
     """Get the appropriate LLM based on routing configuration.
 
@@ -210,19 +224,27 @@ def get_llm(
     factory = _PROVIDER_FACTORIES.get(provider)
     if factory is None:
         raise ValueError(
-            f"Unknown LLM provider: {provider!r}. "
-            f"Available: {', '.join(_PROVIDER_FACTORIES)}"
+            f"Unknown LLM provider: {provider!r}. Available: {', '.join(_PROVIDER_FACTORIES)}"
         )
 
     return factory(model_name, temperature, **kwargs)
 
 
 def get_structured_llm(
-    schema: Type[BaseModel],
+    schema: type[BaseModel],
     routing_type: str = "reasoning",
     temperature: float = 0.0,
-    **kwargs,
-) -> BaseChatModel:
+    **kwargs: Any,
+) -> Runnable[Any, Any]:
     """Get an LLM bound to output a specific Pydantic schema."""
     llm = get_llm(routing_type, temperature, **kwargs)
+    settings = get_settings()
+    if (
+        routing_type == "critic"
+        and settings.critic_model_provider == "groq"
+        and (settings.critic_model_name or "").startswith("llama-")
+    ):
+        # Groq's high-capacity free Llama model supports JSON Object mode but not
+        # strict json_schema response_format. LangChain still parses it into ``schema``.
+        return llm.with_structured_output(schema, method="json_mode")
     return llm.with_structured_output(schema)
